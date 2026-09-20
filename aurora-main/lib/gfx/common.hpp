@@ -316,9 +316,15 @@ private:
 // called with the renderer GPU mutex held; see SealedFrame.
 void seal_frame(SealedFrame& out) noexcept;
 
+// Non-blocking readiness check for every GX pipeline referenced by a sealed
+// frame. Target60 uses this to choose full replay vs native duplication before
+// encoding the midpoint, avoiding partial frames while async pipelines compile.
+bool sealed_frame_pipelines_ready(const SealedFrame& frame) noexcept;
+
 // Encode a sealed frame. Never touches the producer-visible recording state,
 // so this may run concurrently with the producer's FIFO drains.
-void render(SealedFrame& frame, wgpu::CommandEncoder& cmd, int32_t interpolatedFrame = -1, bool finalize = true);
+void render(SealedFrame& frame, wgpu::CommandEncoder& cmd, int32_t interpolatedFrame = -1,
+            bool finalize = true, bool replayResolveOnly = false);
 
 // Encode the frame that is still being recorded. Only for the synchronous
 // EFB-readback split path, which runs on the producer thread.
@@ -418,6 +424,10 @@ wgpu::Sampler& sampler_ref(const wgpu::SamplerDescriptor& descriptor);
 uint32_t align_uniform(uint32_t value);
 
 Vec2<uint32_t> get_render_target_size() noexcept;
+// Stable within a recorded frame and normally across adjacent frames. Includes
+// the pass ordinal and target geometry, so interpolation identities cannot pair
+// the same mesh/material across EFB/offscreen/shadow/reflection passes.
+HashType current_render_pass_signature() noexcept;
 // Same value as get_render_target_size() outside a render pass, but never
 // touches the frame worker's render-pass list, so it is safe off-thread.
 Vec2<uint32_t> get_frame_buffer_size() noexcept;

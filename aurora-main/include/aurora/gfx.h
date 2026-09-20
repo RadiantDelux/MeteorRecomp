@@ -67,8 +67,9 @@ typedef struct {
 
 void aurora_get_frame_interpolation_diagnostics(AuroraFrameInterpolationDiagnostics* diagnostics);
 
-// Generates transform-interpolated perspective frames between consecutive 60 Hz logical frames.
-// Supported targets are 0 (off), 120, 180 and 240. Guest simulation and VI timing are unchanged.
+// Generates transform-interpolated perspective frames without changing guest simulation or VI timing.
+// Supported targets are 0 (off), 60 (cadence-gated 30 -> 60), 120, 180 and 240. The 60 target
+// inserts exactly one midpoint only for logical frames identified by the runtime as a 30 Hz source.
 void aurora_set_frame_interpolation_fps(uint32_t targetFps);
 uint32_t aurora_get_frame_interpolation_fps();
 

@@ -185,10 +185,11 @@ inline bool IsSupportedDisplayMode(std::string_view value) {
     return std::find(values.begin(), values.end(), value) != values.end();
 }
 
-// 240 was offered by an early build and is no longer supported; a saved 240 is
-// migrated to 180 at the parse site.
+// 60 is the 30 -> 60 interpolation mode used by titles whose gameplay renders
+// every other VI retrace. 240 was offered by an early build and is no longer
+// supported; a saved 240 is migrated to 180 at the parse site.
 inline bool IsSupportedFrameInterpolationFps(uint32_t value) {
-    return value == 0 || value == 120 || value == 180;
+    return value == 0 || value == 60 || value == 120 || value == 180;
 }
 
 inline std::optional<std::filesystem::path> ExecutableDirectory() {

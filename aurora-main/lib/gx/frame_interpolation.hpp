@@ -6,8 +6,9 @@
 
 #include <atomic>
 
-// Frame interpolation: generates intermediate presentation frames between two consecutive 60 Hz
-// guest frames by re-staging each perspective draw's uniform block with interpolated transforms.
+// Frame interpolation: generates intermediate presentation frames between consecutive guest frames
+// by re-staging each perspective draw's uniform block with interpolated transforms. Most modes use
+// a 60 Hz source; target 60 is the cadence-gated 30 -> 60 mode.
 namespace aurora::gx {
 constexpr uint32_t MaxInterpolatedFrames = 3;
 
@@ -17,6 +18,10 @@ struct FrameInterpolationDrawIdentity {
   HashType combined = 0;
   HashType pipeline = 0;
   HashType texture = 0;
+  // Recorder-side render-pass identity. Geometry/material hashes alone are not
+  // enough when a scene is rendered again for an EFB effect, shadow, reflection
+  // or offscreen target.
+  HashType renderContext = 0;
   // Hash of the per-vertex PNMTXIDX stream. Matrix values animate, but this topology decides which
   // absolute palette slot each vertex reads, so it must match across a pair.
   HashType matrixTopology = 0;
@@ -41,7 +46,7 @@ namespace detail {
 extern std::atomic_uint32_t g_frameInterpolationFps;
 } // namespace detail
 
-// 0 when interpolation is disabled; otherwise the configured target (120/180/240).
+// 0 when interpolation is disabled; otherwise the configured target (60/120/180/240).
 inline uint32_t frame_interpolation_fps() noexcept {
   return detail::g_frameInterpolationFps.load(std::memory_order_acquire);
 }

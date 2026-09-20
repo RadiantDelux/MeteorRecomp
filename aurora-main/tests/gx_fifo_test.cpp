@@ -231,8 +231,17 @@ TEST(FrameInterpolationContract, RequiresStablePerspectiveDrawSequence) {
   };
 
   resetInterpolation();
-  aurora::gx::set_frame_interpolation_fps(120);
+  aurora::gx::set_frame_interpolation_fps(60);
   const auto info = aurora::gx::build_shader_info({});
+
+  // 60 is the cadence-gated 30 -> 60 mode and therefore stages one midpoint
+  // whenever VI marks the source frame eligible.
+  EXPECT_EQ(buildFrame(info, 50, true), 0u);
+  EXPECT_TRUE(aurora::gx::has_interpolated_frame());
+  EXPECT_EQ(buildFrame(info, 50, true), 8u);
+  EXPECT_EQ(aurora::gx::interpolated_frame_count(), 1u);
+
+  aurora::gx::set_frame_interpolation_fps(120);
 
   // Slots are inserted whenever interpolation is configured, so a frame with no matches just fills
   // them with duplicates. The staged uniform counts below are what verify the matching.

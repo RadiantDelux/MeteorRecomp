@@ -978,6 +978,15 @@ struct PresentationJob {
   // Slot carries a copy of the native image rather than a replayed interpolation. It counts as a
   // present but not toward effectiveFramesPerSecond.
   bool duplicated = false;
+  // Repeat-only VI jobs resolve the currently latched native image when they
+  // reach the presenter. Freezing the image when the retrace requests the job
+  // can otherwise queue an old latch behind a newer interpolation group and
+  // visibly regress the surface by one frame.
+  bool viRepeat = false;
+  // Producer-native jobs update the repeat-only VI latch only after their
+  // surface Present succeeds. This keeps the latch causal with what the user
+  // actually saw instead of publishing a future image at encode time.
+  bool refreshViRepeatLatch = false;
   // Whole display periods the group slid forward at encode time (late group).
   uint32_t slidPeriods = 0;
 };
@@ -1033,8 +1042,20 @@ std::shared_ptr<PresentationImage> acquire_presentation_image(size_t slot, uint3
   return image;
 }
 
-bool present_presentation_job(const PresentationJob& job) {
+bool present_presentation_job(PresentationJob job) {
   ZoneScoped;
+  if (job.viRepeat) {
+    std::lock_guard lock(g_viScanout.mutex);
+    if (!g_viScanout.image) {
+      return false;
+    }
+    job.image = g_viScanout.image;
+    job.logicalFrame = g_viScanout.logicalFrame;
+    job.duplicated = true;
+  }
+  if (!job.image) {
+    return false;
+  }
   const auto submissionStarted = PresentClock::now();
   // Keep the threshold far above compositor and scheduling jitter. The timings below separate a
   // real surface stall from a bad deadline, and only the former needs a rebuild.
@@ -1168,6 +1189,15 @@ bool present_presentation_job(const PresentationJob& job) {
       }
     }
   }
+  if (presented && job.refreshViRepeatLatch) {
+    // Do this after releasing the surface lock. In repeat-only mode every
+    // successfully shown producer image becomes the fallback latch, including
+    // a midpoint. If a native tail is later dropped or fails to Present(), a
+    // repeat then reuses the last image actually shown instead of regressing to
+    // the previous source frame. FIFO order still lets a successful native
+    // replace the midpoint immediately afterward.
+    latch_vi_scanout_image(job);
+  }
   const auto totalDuration =
       std::chrono::duration_cast<std::chrono::nanoseconds>(PresentClock::now() - submissionStarted);
   constexpr int kStallRebuildThreshold = 3;
@@ -1233,6 +1263,7 @@ void presenter_main() noexcept {
   if (!SDL_SetCurrentThreadPriority(SDL_THREAD_PRIORITY_HIGH)) {
     Log.warn("Could not raise the asynchronous presenter thread priority: {}", SDL_GetError());
   }
+  PresentClock::time_point lastSuccessfulProducerDeadline{};
   for (;;) {
     PresentationJob job;
     {
@@ -1247,7 +1278,15 @@ void presenter_main() noexcept {
     }
     g_presenter.cv.notify_all();
 
-    present_presentation_job(job);
+    const bool redundantRepeat =
+        job.viRepeat && job.presentAt != PresentClock::time_point{} &&
+        lastSuccessfulProducerDeadline != PresentClock::time_point{} &&
+        job.presentAt <= lastSuccessfulProducerDeadline;
+    const bool presented = redundantRepeat ? false : present_presentation_job(job);
+    if (presented && !job.viRepeat && job.presentAt != PresentClock::time_point{} &&
+        job.presentAt > lastSuccessfulProducerDeadline) {
+      lastSuccessfulProducerDeadline = job.presentAt;
+    }
 
     {
       std::lock_guard lock(g_presenter.mutex);
@@ -1521,6 +1560,7 @@ struct SealedFrameContext {
   uint32_t logicalFrame = 0;
   bool interpolationActive = false;
   bool replayInterpolatedFrames = false;
+  bool thirtyToSixtySchedule = false;
   bool viScanoutMode = false;
 };
 
@@ -1543,6 +1583,11 @@ void seal_frame_locked(gfx::SealedFrame& sealedFrame, SealedFrameContext& ctx) {
   ctx.interpolatedFrameCount = gx::interpolated_frame_count();
   ctx.interpolationActive = ctx.interpolatedFrameCount != 0;
   ctx.replayInterpolatedFrames = ctx.interpolationActive && gx::frame_interpolation_replay_safe();
+  // Latch the source-cadence interpretation with the sealed frame. The user can
+  // change the graphics option while this worker is still encoding, so later
+  // pacing must not re-read a global mode that belongs to the next frame.
+  ctx.thirtyToSixtySchedule =
+      gx::frame_interpolation_fps() == 60 && ctx.interpolatedFrameCount == 1;
   ctx.scheduleBaseNanos = g_presentScheduleBaseNanos.load(std::memory_order_acquire);
   ctx.scheduleIntervalNanos = g_presentScheduleIntervalNanos.load(std::memory_order_acquire);
   ctx.viScanoutMode = g_viScanoutMode.load(std::memory_order_acquire);
@@ -1591,6 +1636,18 @@ std::vector<PresentationJob> encode_sealed_frame(gfx::SealedFrame& sealedFrame, 
   };
   std::vector<PresentationJob> presentationJobs;
   presentationJobs.reserve(presentationJobCount);
+  const bool refreshViRepeatLatch =
+      g_viScanoutRepeatMode.load(std::memory_order_acquire) && !ctx.viScanoutMode;
+
+  // With skip-unready enabled, encoding the midpoint first can otherwise omit
+  // a just-seen draw whose pipeline finishes before the native slot a few ms
+  // later. For target60, prefer one fully correct native render duplicated into
+  // the midpoint over a partial interpolated image. The readiness probe is
+  // non-blocking and applies only to this sealed host presentation group.
+  if (ctx.thirtyToSixtySchedule && ctx.replayInterpolatedFrames &&
+      !gfx::sealed_frame_pipelines_ready(sealedFrame)) {
+    ctx.replayInterpolatedFrames = false;
+  }
 
   // Each slot is submitted as soon as it is encoded, so the GPU starts slot 0 while slot 1 is still
   // recording. Queue order preserves the ordering the single batched buffer gave.
@@ -1625,7 +1682,8 @@ std::vector<PresentationJob> encode_sealed_frame(gfx::SealedFrame& sealedFrame, 
   if (ctx.replayInterpolatedFrames) {
     for (uint32_t interpolatedFrame = 0; interpolatedFrame < ctx.interpolatedFrameCount;
          ++interpolatedFrame) {
-      gfx::render(sealedFrame, encoder, static_cast<int32_t>(interpolatedFrame), false);
+      gfx::render(sealedFrame, encoder, static_cast<int32_t>(interpolatedFrame), false,
+                  ctx.thirtyToSixtySchedule);
       auto image =
           acquire_presentation_image(interpolatedFrame, ctx.snapshotWidth, ctx.snapshotHeight);
       encode_presentation_snapshot(encoder, ctx.presentSource, *image, true);
@@ -1634,6 +1692,7 @@ std::vector<PresentationJob> encode_sealed_frame(gfx::SealedFrame& sealedFrame, 
           .logicalFrame = ctx.logicalFrame,
           .presentAt = slotPresentDeadline(interpolatedFrame),
           .interpolated = true,
+          .refreshViRepeatLatch = refreshViRepeatLatch,
       });
       submitEncodedSlot(encoder);
       encoder = g_device.CreateCommandEncoder(&encoderDescriptor);
@@ -1658,6 +1717,7 @@ std::vector<PresentationJob> encode_sealed_frame(gfx::SealedFrame& sealedFrame, 
           .presentAt = slotPresentDeadline(interpolatedFrame),
           .interpolated = true,
           .duplicated = true,
+          .refreshViRepeatLatch = refreshViRepeatLatch,
       });
       submitEncodedSlot(encoder);
       encoder = g_device.CreateCommandEncoder(&encoderDescriptor);
@@ -1672,6 +1732,7 @@ std::vector<PresentationJob> encode_sealed_frame(gfx::SealedFrame& sealedFrame, 
       .logicalFrame = ctx.logicalFrame,
       .presentAt = slotPresentDeadline(ctx.interpolatedFrameCount),
       .interpolated = false,
+      .refreshViRepeatLatch = refreshViRepeatLatch,
   });
   submitEncodedSlot(encoder);
 
@@ -1680,49 +1741,59 @@ std::vector<PresentationJob> encode_sealed_frame(gfx::SealedFrame& sealedFrame, 
   // The scanout owner will present this exact image at each VI retrace. Keep
   // interpolation on its established path because those extra slots are a host
   // enhancement rather than hardware VI scanout.
-  const bool keepViRepeatLatch =
-      g_viScanoutRepeatMode.load(std::memory_order_acquire);
-  if ((ctx.viScanoutMode || keepViRepeatLatch) && !ctx.interpolationActive &&
-      !presentationJobs.empty()) {
+  if (ctx.viScanoutMode && !ctx.interpolationActive && !presentationJobs.empty()) {
     latch_vi_scanout_image(presentationJobs.back());
-    if (ctx.viScanoutMode) {
-      presentationJobs.clear();
-    }
+    presentationJobs.clear();
   }
 
   // A group that finished encoding past its anchor slides forward by whole display periods, never
   // per slot. The cursor keeps two groups off one anchor, which bursts then holds for a period.
   static PresentClock::time_point s_lastGroupAnchor{};
+  static bool s_lastGroupWasThirtyToSixty = false;
   if (ctx.interpolationActive && ctx.scheduleIntervalNanos != 0 && !presentationJobs.empty() &&
       presentationJobs.front().presentAt != PresentClock::time_point{}) {
-    const std::chrono::nanoseconds interval{static_cast<int64_t>(ctx.scheduleIntervalNanos)};
+    // target=60 represents a 30 Hz source span. Its two jobs subdivide a two-VI
+    // source interval, but missed groups still recover on the physical one-VI
+    // presentation grid instead of jumping a whole 33.3 ms source span.
+    const uint64_t scheduleGridIntervalNanos =
+        ctx.thirtyToSixtySchedule
+            ? ctx.scheduleIntervalNanos / 2u
+            : ctx.scheduleIntervalNanos;
+    const std::chrono::nanoseconds interval{static_cast<int64_t>(scheduleGridIntervalNanos)};
     auto anchor = presentationJobs.front().presentAt;
     const auto now = PresentClock::now();
     if (now > anchor) {
       const auto behind = std::chrono::duration_cast<std::chrono::nanoseconds>(now - anchor);
       const uint64_t periods =
-          static_cast<uint64_t>(behind.count()) / ctx.scheduleIntervalNanos + 1u;
-      anchor += std::chrono::nanoseconds{static_cast<int64_t>(periods * ctx.scheduleIntervalNanos)};
+          static_cast<uint64_t>(behind.count()) / scheduleGridIntervalNanos + 1u;
+      anchor += std::chrono::nanoseconds{static_cast<int64_t>(periods * scheduleGridIntervalNanos)};
     }
-    if (s_lastGroupAnchor != PresentClock::time_point{} && anchor <= s_lastGroupAnchor) {
-      anchor = s_lastGroupAnchor + interval;
+    if (s_lastGroupAnchor != PresentClock::time_point{}) {
+      const auto minimumAnchor =
+          s_lastGroupAnchor +
+          (ctx.thirtyToSixtySchedule && s_lastGroupWasThirtyToSixty ? interval * 2 : interval);
+      if (anchor < minimumAnchor) {
+        anchor = minimumAnchor;
+      }
     }
     const auto shift =
         std::chrono::duration_cast<std::chrono::nanoseconds>(anchor - presentationJobs.front().presentAt);
     if (shift.count() > 0) {
       const uint32_t slidPeriods = static_cast<uint32_t>(
-          (static_cast<uint64_t>(shift.count()) + ctx.scheduleIntervalNanos - 1u) /
-          ctx.scheduleIntervalNanos);
+          (static_cast<uint64_t>(shift.count()) + scheduleGridIntervalNanos - 1u) /
+          scheduleGridIntervalNanos);
       for (auto& job : presentationJobs) {
         job.presentAt += shift;
         job.slidPeriods = slidPeriods;
       }
     }
     s_lastGroupAnchor = anchor;
+    s_lastGroupWasThirtyToSixty = ctx.thirtyToSixtySchedule;
   } else {
     // No schedule (interpolation off, boot/black presents): the grid is gone,
     // so the cursor must not constrain the next scheduled group.
     s_lastGroupAnchor = {};
+    s_lastGroupWasThirtyToSixty = false;
   }
 
   if (pendingFrameCapture.has_value()) {
@@ -2197,17 +2268,19 @@ bool aurora_present_vi_scanout(uint64_t presentAtNanos) {
     if (!aurora::g_viScanout.image) {
       return false;
     }
-    job.image = aurora::g_viScanout.image;
-    job.logicalFrame = aurora::g_viScanout.logicalFrame;
-    // In repeat-only mode the producer already owns the first presentation of
-    // every sealed image, so every VI scanout job is a duplicate by definition.
-    // Full VI-owned mode is different: the first scanout of a newly latched
-    // image is the real motion frame and only later scans are duplicates.
-    job.duplicated =
-        repeatOnly && !viOwnsScanout
-            ? true
-            : aurora::g_viScanout.imageSerial == aurora::g_viScanout.lastScannedSerial;
-    if (viOwnsScanout) {
+    if (repeatOnly && !viOwnsScanout) {
+      // Resolve the image at presenter dequeue time. A repeat requested before
+      // a new interpolation group then shows the old latch, while a repeat
+      // queued after that group's native Present sees the newly refreshed one.
+      job.viRepeat = true;
+      job.duplicated = true;
+    } else {
+      job.image = aurora::g_viScanout.image;
+      job.logicalFrame = aurora::g_viScanout.logicalFrame;
+      // Full VI-owned mode is different: the first scanout of a newly latched
+      // image is the real motion frame and only later scans are duplicates.
+      job.duplicated =
+          aurora::g_viScanout.imageSerial == aurora::g_viScanout.lastScannedSerial;
       aurora::g_viScanout.lastScannedSerial = aurora::g_viScanout.imageSerial;
     }
   }

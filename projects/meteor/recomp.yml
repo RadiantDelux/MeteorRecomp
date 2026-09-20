@@ -2616,6 +2616,140 @@ translation:
     # epilogue ending 0x8017F6D0 blr, and the next independent framed function
     # begins at 0x8017F6D4. Runtime publication plus exact boundaries make hard.
     - 0x8017F2C4
+    # Fresh NORMAL PID22128 / base_1789891560_pid22128 crossed the prior bulk
+    # coverage and stopped in func_8006A740 at architectural LR 0x8006A7CC.
+    # SAME-PID object 0x9266AC80 has +0x28=0x80378620; func_8006A740 loads the
+    # callback from descriptor+0x0C, and MEM1 0x8037862C contains 0x80174434.
+    # HEADLESS/manual paired-single disassembly proves predecessor 0x80174430
+    # is terminal blr, target 0x80174434 is its own one-instruction blr leaf,
+    # and 0x80174438 starts the next independent aligned-stack function. Runtime
+    # publication plus exact no-fallthrough boundaries make this a hard root.
+    - 0x80174434
+    # Fresh NORMAL PID17552 / base_1789894795_pid17552 reached this table-driven
+    # callback at architectural LR 0x80018830 in func_800186A4. The caller uses
+    # r31 as a 0x10-byte descriptor record and loads CTR from [r31+0x08]. SAME-
+    # PID r31=0x80370C98 and MEM1 0x80370CA0 contains exactly 0x800188D8.
+    # HEADLESS/manual paired-single disassembly proves the prior routine returns
+    # at 0x800188D4, target owns its independent 0x120-byte-frame body through
+    # 0x80019044 blr, and the next independent framed boundary is 0x80019048.
+    # Runtime publication plus exact standalone boundaries make this a hard root.
+    - 0x800188D8
+    # Fresh manual NORMAL PID17440 / base_1789895769_pid17440 stopped in
+    # func_8006A690 at architectural LR 0x8006A6DC. The retail node at r30
+    # publishes descriptor 0x8037B968 at +0x28; func_8006A690 loads CTR from
+    # descriptor+0x00, and SAME-PID MEM1 0x8037B968 contains 0x801F6844.
+    # HEADLESS/manual paired-single disassembly proves predecessor 0x801F6840
+    # is terminal blr, target owns its independent 0x40-byte-frame body through
+    # 0x801F6B50 blr, and the next descriptor-published boundary 0x801F6B54 is
+    # an independent one-insn leaf. Runtime publication plus exact boundaries
+    # make this a hard root.
+    - 0x801F6844
+    # Fresh manual NORMAL PID17144 / base_1789897067_pid17144 crossed the prior
+    # blocker and stopped in func_8006A740 at architectural LR 0x8006A7CC.
+    # SAME-PID node 0x925BC240 publishes descriptor 0x8037B750 at +0x28; the
+    # caller loads CTR from descriptor+0x0C, and MEM1 0x8037B75C uniquely holds
+    # 0x801F0364. Ghidra HEADLESS proves FUN_801F012C ends at 0x801F0360 blr,
+    # target 0x801F0364 is a standalone one-instruction blr leaf, and the next
+    # descriptor-published function starts independently at 0x801F0368. Runtime
+    # publication plus exact no-fallthrough boundaries make this a hard root.
+    - 0x801F0364
+    # Fresh manual NORMAL PID10840 / base_1789898268_pid10840 crossed
+    # 0x801F0364 and stopped in func_8006AE2C at architectural LR 0x8006AEC8.
+    # The allocator stores the original descriptor argument at the live node's
+    # +0x28 field: SAME-PID MEM2 0x925EE1E8=0x80378360. func_8006AE2C loads
+    # its callback from descriptor+0x04, and SAME-PID MEM1 0x80378364 uniquely
+    # contains 0x80161578. HEADLESS proves predecessor 0x80161574 is terminal
+    # blr, target opens its own 0xA0-byte frame at 0x80161578 and returns at
+    # 0x801618FC blr, and next independent framed function starts 0x80161900.
+    # Runtime publication plus exact standalone boundaries make this a hard root.
+    - 0x80161578
+    # Fresh manual NORMAL PID25100 / base_1789898913_pid25100 stopped in
+    # func_8006A740 at architectural LR 0x8006A784. SAME-PID live node
+    # 0x926C2EA0 publishes descriptor 0x8037BA40 at +0x28; the first-list path
+    # loads CTR from descriptor+0x0C, and MEM1 0x8037BA4C uniquely contains
+    # 0x80201F34. Ghidra HEADLESS proves 0x80201AB8 returns at 0x80201F30 blr
+    # with no fallthrough; target 0x80201F34 starts an independent aligned-stack
+    # frame and returns at 0x80202060 blr, followed by independent 0x80202064.
+    # The crash label func_80201AB8+0x47C is therefore a boundary artifact.
+    # Runtime publication plus exact standalone boundaries make this a hard root.
+    - 0x80201F34
+    # Fresh manual NORMAL PID15772 / base_1789899903_pid15772 stopped in
+    # func_8006B1FC at architectural LR 0x8006B238. SAME-PID live node
+    # 0x92687920 publishes descriptor 0x8037B3F8 at +0x28; the caller loads CTR
+    # from descriptor+0x08, and MEM1 0x8037B400 contains 0x801D55F0 exactly.
+    # HEADLESS proves predecessor FUN_801D559C returns at 0x801D55EC blr with no
+    # fallthrough; target 0x801D55F0 is its own one-instruction blr leaf; the
+    # next independent framed function starts at 0x801D55F4. The crash label
+    # func_801D559C+0x54 is therefore a nearest-label artifact. Runtime
+    # publication plus exact standalone boundaries make this a hard root.
+    - 0x801D55F0
+    # Fresh manual NORMAL PID18828 / base_1789900604_pid18828 stopped in
+    # func_8006A948 at architectural LR 0x8006A9EC. SAME-PID live node
+    # 0x92687840 publishes descriptor 0x80378438 at +0x28; the second-list path
+    # loads CTR from descriptor+0x14, and MEM1 0x8037844C uniquely contains
+    # 0x801641C4. HEADLESS proves covered predecessor func_80163FC8 ends at
+    # 0x801641C0 blr with no fallthrough; target 0x801641C4 opens an independent
+    # dynamically aligned frame and returns at 0x8016441C blr; the next framed
+    # function starts independently at 0x80164420. Runtime publication plus
+    # exact standalone boundaries make this a hard root.
+    - 0x801641C4
+    # Fresh manual NORMAL PID23508 / base_1789901292_pid23508 stopped in
+    # func_800C6A08 at architectural LR 0x800C6AC4. SAME-PID MEM1 root
+    # 0x8062A7F0 -> 0x92353D60; MEM2 root current index=3 and root+0x104
+    # publishes record table 0x80374D30. Active 24-byte record is 0x80374D78;
+    # slot +0x0C is exactly 0x800DF870 and func_800C6A08 dispatches record+0x0C.
+    # HEADLESS proves predecessor func_800DF6DC returns at 0x800DF86C blr;
+    # target 0x800DF870 is an independent two-instruction leaf (`li r3,1; blr`),
+    # with next independent framed function at 0x800DF878. The crash label
+    # func_800DF6DC+0x194 is therefore a nearest-label artifact. All other active
+    # record callback siblings are already translated/rooted.
+    - 0x800DF870
+    # Fresh manual NORMAL PID10932 / base_1789902199_pid10932 stopped in
+    # func_800C69B8 via InvokeIndirectJump with architectural LR 0x800C6718.
+    # SAME-PID singleton state [0x8062A7F0]=0x92353D60 has current index 4 and
+    # record table 0x80374D30, selecting record 0x80374D90. Caller reads the
+    # record +0x04 slot, which is exactly 0x800DFCB4. HEADLESS proves predecessor
+    # func_800DFBE4 ends at 0x800DFCB0 blr with no fallthrough; target
+    # 0x800DFCB4 is an independent two-instruction leaf (`li r3,4; blr`) through
+    # 0x800DFCB8; next independent framed function begins at 0x800DFCBC. This is
+    # a real runtime callback boundary, not a nearby switch case.
+    - 0x800DFCB4
+    # Fresh manual NORMAL PID11608 / base_1789903670_pid11608 stopped in
+    # func_8006AE2C at architectural LR 0x8006AEC8. SAME-PID object
+    # 0x925A3AE0 stores descriptor 0x8037B998 at +0x28; caller loads descriptor
+    # +0x04, and MEM1 0x8037B99C uniquely contains 0x801FA9C0. HEADLESS proves
+    # prior standalone stub 0x801FA9BC is a separate blr; target 0x801FA9C0
+    # starts an independent dynamically aligned frame, owns the body through
+    # 0x801FABA8 blr, and is followed by independent tail helper 0x801FABAC.
+    # Runtime publication plus exact standalone boundaries make this a hard root.
+    - 0x801FA9C0
+    # Fresh manual NORMAL PID20288 / base_1789904221_pid20288 stopped in
+    # func_8006A948 at architectural LR 0x8006A9EC. SAME-PID live node
+    # 0x925EBFC0 stores descriptor 0x8037B9C8 at +0x28; the caller's second
+    # traversal loads descriptor +0x14, and MEM1 0x8037B9DC uniquely contains
+    # 0x801FB1E0. HEADLESS proves func_801FB18C ends at 0x801FB1DC blr;
+    # 0x801FB1E0 is an independent one-instruction blr leaf; next standalone
+    # framed callback starts at already-rooted 0x801FB1E4. The crash label
+    # func_801FB18C+0x54 was only a nearest-generated-label artifact.
+    - 0x801FB1E0
+    # Fresh manual NORMAL PID17952 / base_1789905088_pid17952 stopped in
+    # func_8006A740 at architectural LR 0x8006A7CC. SAME-PID live node
+    # 0x9267E440 stores descriptor 0x803785F0 at +0x28; the caller's second
+    # traversal loads descriptor +0x0C, and MEM1 0x803785FC uniquely contains
+    # 0x801704EC. HEADLESS/raw flow proves the preceding 0x80170168 body restores
+    # state and ends at 0x801704E8 blr; 0x801704EC is a standalone one-instruction
+    # blr leaf; next independent dynamically aligned function starts 0x801704F0.
+    # The crash label func_80170168+0x384 was only a nearest-generated-label artifact.
+    - 0x801704EC
+    # Diagnostic PracticeSweeper PID32868 / practice_sweeper_1789906443_pid32868
+    # reached func_800C69B8 through func_800C6704 (architectural LR 0x800C6718).
+    # SAME-PID singleton [0x8062A7F0]=0x92353D60 has current index 6 and
+    # table pointer [root+0x104]=0x80374D30, selecting 24-byte record 0x80374DC0.
+    # The dispatcher loads record+0x04, which is exactly 0x800DFAF8. Raw/HEADLESS
+    # ownership is unambiguous: predecessor returns at 0x800DFAF4; target is the
+    # standalone leaf `li r3,6; blr` at 0x800DFAF8..0x800DFAFC; next independent
+    # framed callback starts at already-map-covered 0x800DFB00. Runtime-taken hard root.
+    - 0x800DFAF8
   allow_unsupported_instructions: false
   enable_state_free_abi: false
   discover_v_table_functions: false

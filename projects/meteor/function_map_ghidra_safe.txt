@@ -269,6 +269,11 @@
 800DFBAC
 800DFBE4
 800DFCBC
+# PID10932 record 0x80374D90 publishes direct sibling 0x800DFD1C at +0x0C.
+# HEADLESS proves 0x800DFCBC ends at 0x800DFD18 blr; 0x800DFD1C is an
+# independent `li r3,1; blr` leaf through 0x800DFD20; next independent framed
+# function begins at 0x800DFD24. Conservative map-only seed until runtime-taken.
+800DFD1C
 800F08F8
 800F11C0
 800F3448
@@ -1434,3 +1439,84 @@
 # boundaries make both conservative map-only seeds, not hard roots.
 8017F780
 8017F848
+# PID22128 descriptor 0x80378620 publishes two additional independently bounded
+# siblings around the runtime-proven 0x80174434 target. +0x14=0x80174438 starts
+# an aligned-stack function after 0x80174434 blr and ends at 0x801747B0 blr;
+# +0x10=0x801747B4 is a one-insn tail thunk to 0x8006B1EC, followed by the
+# independent framed/map-covered 0x801747B8 entry. Conservative map-only seeds.
+80174438
+801747B4
+# PID17552's retail descriptor table at 0x80370C90.. publishes these callbacks
+# in +0x08 slots. HEADLESS/manual paired-single disassembly independently proves
+# 0x80019048 begins after 0x80019044 blr and ends at 0x80019A38 blr, followed by
+# 0x80019A3C; 0x80019A3C in turn begins after that terminal predecessor and ends
+# at 0x80019BDC blr before already-covered 0x80019BE0. Map-only boundary seeds.
+80019048
+80019A3C
+# PID17440 descriptor 0x8037B968 publishes two additional missing standalone
+# siblings around hard-root 0x801F6844. HEADLESS proves 0x801F6B54 is a one-insn
+# blr leaf after target's terminal 0x801F6B50 blr and before framed 0x801F6B58;
+# 0x801F6B9C is a one-insn tail thunk to 0x8006B1EC after 0x801F6B98 blr and
+# before independent framed 0x801F6BA0. Conservative map-only seeds.
+801F6B54
+801F6B9C
+# PID17144 descriptor 0x8037B750 publishes three additional missing standalone
+# siblings around hard-root 0x801F0364. HEADLESS proves 0x801F0368 begins after
+# the target's terminal blr and returns at 0x801F09FC; 0x801F0A00 begins after
+# that blr and ends with a terminal tail branch at 0x801F0A10 -> 0x8006B1EC;
+# 0x801F0A14 starts after that terminal branch and ends with its own tail branch
+# at 0x801F0A3C -> 0x8000443C, before independent framed 0x801F0A40. The later
+# 0x801F1E74..0x801F1F30 switch-case family is deliberately rejected as
+# interiors/fallthrough labels. Conservative boundary seeds only.
+801F0368
+801F0A00
+801F0A14
+# PID10840 descriptor 0x80378360 publishes one directly related missing sibling
+# in addition to hard-root 0x80161578. Slot +0x10=0x80161B38 is a one-insn
+# tail thunk to 0x8006B1EC after terminal 0x80161B34 blr and before the
+# independent framed/map-covered 0x80161B3C entry. The other descriptor slots
+# are already translated/covered (0x80161988, 0x80161900, 0x80161B3C).
+# Conservative map-only seed; not promoted as a runtime-proven hard root.
+80161B38
+# PID25100 descriptor 0x8037BA40 publishes one additional uncovered standalone
+# sibling beside hard-root 0x80201F34. HEADLESS proves 0x802020B8 is a one-insn
+# blr leaf after covered 0x80202064 ends at 0x802020B4 blr and before the next
+# independent framed callback begins at 0x802020BC. Other direct family members
+# (0x8020183C, 0x802019FC, 0x80201AB8, 0x80202064) are already covered.
+# Conservative map-only seed; not promoted without a runtime hit.
+802020B8
+# PID15772 descriptor 0x8037B3F8 publishes one additional uncovered standalone
+# primary sibling beside hard-root 0x801D55F0. HEADLESS proves 0x801D5668 is a
+# one-insn tail thunk to 0x8006B1EC after 0x801D55F4 ends at 0x801D5664 blr;
+# the next independent leaf begins at 0x801D566C. The other primary siblings
+# 0x801D559C and 0x801D55F4 are already generated. Conservative map-only seed.
+801D5668
+# PID18828 descriptor 0x80378438 publishes two additional uncovered standalone
+# siblings beside hard-root 0x801641C4. HEADLESS proves 0x80163FB4..0x80163FC0
+# is an independent frameless leaf after terminal 0x80163FB0 blr, and
+# 0x80163FC4 is a one-insn tail thunk to 0x8006B1EC before independent framed
+# 0x80163FC8. Conservative map-only seeds; neither was runtime-taken here.
+80163FB4
+80163FC4
+# PID11608 descriptor 0x8037B998 publishes three additional uncovered
+# standalone siblings beside hard-root 0x801FA9C0. HEADLESS proves:
+# - 0x801FABAC: two loads then terminal tail branch to 0x801FB2F8; next framed
+#   function starts independently at already-covered 0x801FABB8.
+# - 0x801FAC00: one-insn terminal tail branch to 0x8006B1EC after 0x801FABFC blr.
+# - 0x801FAC04: one-insn blr before independent aligned-stack 0x801FAC08.
+# Conservative map-only seeds; none were runtime-taken in PID11608.
+801FABAC
+801FAC00
+801FAC04
+# PID20288 descriptor 0x8037B9C8 publishes +0x08=0x801FB044. HEADLESS proves
+# predecessor 0x801FB040 blr; this standalone four-instruction helper ends in a
+# terminal tail branch to 0x80133228; next independent framed function starts
+# at already-covered 0x801FB054. Conservative map-only seed, not runtime-taken.
+801FB044
+# PID17952 descriptor 0x803785F0 publishes two missing standalone siblings.
+# 0x801704F0 begins an independent dynamically aligned frame after terminal
+# 0x801704EC blr and returns at 0x80170930 blr. 0x80170934 is a separate
+# one-instruction terminal tail thunk to 0x8006B1EC before framed 0x80170938.
+# Conservative map-only seeds; neither was runtime-taken in PID17952.
+801704F0
+80170934

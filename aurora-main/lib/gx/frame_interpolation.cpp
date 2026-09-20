@@ -1,4 +1,4 @@
-﻿#include "frame_interpolation.hpp"
+#include "frame_interpolation.hpp"
 
 #include "../internal.hpp"
 #include "aurora/gfx.h"
@@ -263,6 +263,11 @@ std::atomic_uint32_t s_activeInterpolationSamples{0};
 // Set when the producer already overran its retrace budget; the next seal then skips
 // inserted slots for that one frame, which helps the late frame catch back up.
 std::atomic_bool s_dropInterpolationAtSeal{false};
+// Target60 is cadence-gated. A native-60 UI frame or a genuinely late battle
+// frame breaks the temporal spacing assumed by a 30 Hz midpoint, so the next
+// eligible frame must start from fresh history instead of interpolating across
+// the discontinuity.
+std::atomic_bool s_resetTarget60HistoryAtSeal{false};
 
 // Windowed backstop for sustained overload. The wide reduce/restore gap is the
 // hysteresis, so a scene that can sustain N slots settles there instead of flapping.
@@ -277,6 +282,11 @@ uint32_t maximum_interpolation_samples() noexcept {
   if (targetFps == 0) {
     return 0;
   }
+  // 60 is the special 30 -> 60 mode: one midpoint between consecutive 30 Hz
+  // motion frames. Higher targets retain the original 60 Hz-source behavior.
+  if (targetFps == 60) {
+    return 1;
+  }
   return std::min(targetFps / 60 - 1, MaxInterpolatedFrames);
 }
 
@@ -290,8 +300,9 @@ HashType combine_identity(HashType first, HashType second) noexcept {
 }
 
 HashType stable_identity(const FrameInterpolationDrawIdentity& identity) noexcept {
-  return combine_identity(combine_identity(identity.pipeline, identity.texture),
-                          identity.matrixTopology);
+  return combine_identity(
+      combine_identity(combine_identity(identity.pipeline, identity.texture), identity.matrixTopology),
+      identity.renderContext);
 }
 
 float dot3(const std::array<float, 3>& a, const std::array<float, 3>& b) noexcept {
@@ -725,14 +736,14 @@ float snapshot_match_distance_squared(const FrameTransformEntry& previousEntry,
 }
 
 void set_frame_interpolation_fps(uint32_t targetFps) noexcept {
-  if (targetFps != 120 && targetFps != 180 && targetFps != 240) {
+  if (targetFps != 60 && targetFps != 120 && targetFps != 180 && targetFps != 240) {
     targetFps = 0;
   }
   detail::g_frameInterpolationFps.store(targetFps, std::memory_order_release);
   // Start at the configured quality; the controller only ever backs off from here.
-  s_interpolationSampleTarget.store(targetFps == 0 ? 0u : std::min(targetFps / 60 - 1, MaxInterpolatedFrames),
-                                    std::memory_order_release);
+  s_interpolationSampleTarget.store(maximum_interpolation_samples(), std::memory_order_release);
   s_dropInterpolationAtSeal.store(false, std::memory_order_release);
+  s_resetTarget60HistoryAtSeal.store(false, std::memory_order_release);
   s_pacingWindowFrames.store(0, std::memory_order_release);
   s_pacingWindowMisses.store(0, std::memory_order_release);
   // A reconfiguration starts a fresh diagnostic window.
@@ -747,9 +758,24 @@ void report_producer_paced(bool paced) noexcept {
   const uint32_t maximumSamples = maximum_interpolation_samples();
   if (maximumSamples == 0) {
     s_dropInterpolationAtSeal.store(false, std::memory_order_release);
+    s_resetTarget60HistoryAtSeal.store(false, std::memory_order_release);
     s_pacingWindowFrames.store(0, std::memory_order_release);
     s_pacingWindowMisses.store(0, std::memory_order_release);
     s_interpolationSampleTarget.store(0, std::memory_order_release);
+    return;
+  }
+
+  // Target 60 is cadence-gated by VI: a healthy battle frame arrives every two
+  // retraces and gets one midpoint; native 60 Hz UI frames (one retrace) and
+  // genuinely late frames skip interpolation for that frame only. Do not feed
+  // this intentional per-scene gating into the adaptive quality window, or a
+  // long menu would reduce the next battle to zero interpolation slots.
+  if (frame_interpolation_fps() == 60) {
+    s_dropInterpolationAtSeal.store(!paced, std::memory_order_release);
+    s_resetTarget60HistoryAtSeal.store(!paced, std::memory_order_release);
+    s_interpolationSampleTarget.store(1, std::memory_order_release);
+    s_pacingWindowFrames.store(0, std::memory_order_release);
+    s_pacingWindowMisses.store(0, std::memory_order_release);
     return;
   }
 
@@ -829,9 +855,19 @@ void finalize_frame_interpolation() noexcept {
     s_diagLateSealDrops.fetch_add(1, std::memory_order_relaxed);
     s_hasInterpolatedFrame.store(false, std::memory_order_release);
     s_pendingUniformInterpolations.clear();
-    retire_frame_transforms();
+    if (s_resetTarget60HistoryAtSeal.exchange(false, std::memory_order_acq_rel)) {
+      // Do not bridge menu->battle, battle->menu, or a 3+-retrace hitch with a
+      // synthetic midpoint. Both sides remain native for one source frame, then
+      // exact matching resumes from two consecutive cadence-valid battle frames.
+      recycle_transform_entries(s_previousFrameTransforms);
+      recycle_transform_entries(s_currentFrameTransforms);
+      s_previousFrameHasIndexedMatrices = false;
+    } else {
+      retire_frame_transforms();
+    }
     return;
   }
+  s_resetTarget60HistoryAtSeal.store(false, std::memory_order_release);
   // Below this bound a direct all-pairs build is cheaper than setting up the
   // spatial grid; the produced edge set is identical either way.
   constexpr size_t kAllPairsEdgeLimit = 1024;
@@ -886,9 +922,39 @@ void finalize_frame_interpolation() noexcept {
            static_cast<uint64_t>(cz);
   };
 
+  const auto safeUniqueFallbackPair = [&](size_t previousIndex, size_t currentIndex) {
+    const auto& previous = s_previousFrameTransforms[previousIndex].transform;
+    const auto& current = s_currentFrameTransforms[currentIndex].transform;
+    if (!std::isfinite(snapshot_match_distance_squared(s_previousFrameTransforms[previousIndex], current))) {
+      return false;
+    }
+    if (static_cast<bool>(previous.indexedMatrices) != static_cast<bool>(current.indexedMatrices)) {
+      return false;
+    }
+    if (current.indexedMatrices) {
+      if (previous.usedMatrixMask != current.usedMatrixMask || current.usedMatrixMask == 0) {
+        return false;
+      }
+      for (size_t slot = 0; slot < MaxPnMtx; ++slot) {
+        if ((current.usedMatrixMask & (1u << slot)) == 0) {
+          continue;
+        }
+        if (!prepare_affine_pair(previous.indexedMatrices->position[slot],
+                                 current.indexedMatrices->position[slot]).valid ||
+            !prepare_affine_pair(previous.indexedMatrices->normal[slot],
+                                 current.indexedMatrices->normal[slot]).valid) {
+          return false;
+        }
+      }
+      return true;
+    }
+    return prepare_affine_pair(previous.position, current.position).valid &&
+           prepare_affine_pair(previous.normal, current.normal).valid;
+  };
+
   const auto matchGroups =
       [&](const auto& currentGroups, const auto& previousGroups,
-          bool allowOrderedFallback) {
+          bool allowOrderedFallback, bool uniqueOnlyFallback) {
     for (const auto& [signature, allCurrentIndices] : currentGroups) {
       if (allCurrentIndices.empty()) {
         continue;
@@ -912,10 +978,18 @@ void finalize_frame_interpolation() noexcept {
       if (groupCurrentIndices.empty() || groupPreviousIndices.empty()) {
         continue;
       }
+      if (uniqueOnlyFallback &&
+          (groupPreviousIndices.size() != 1 || groupCurrentIndices.size() != 1)) {
+        continue;
+      }
 
       // A unique draw has no identity ambiguity. Keep the conservative
       // interpolation fallback for malformed/non-finite matrices.
       if (groupPreviousIndices.size() == 1 && groupCurrentIndices.size() == 1) {
+        if (uniqueOnlyFallback &&
+            !safeUniqueFallbackPair(groupPreviousIndices.front(), groupCurrentIndices.front())) {
+          continue;
+        }
         currentToPrevious[groupCurrentIndices.front()] = groupPreviousIndices.front();
         previousMatched[groupPreviousIndices.front()] = 1;
         currentMatched[groupCurrentIndices.front()] = 1;
@@ -1070,15 +1144,24 @@ void finalize_frame_interpolation() noexcept {
       }
     }
   };
-  matchGroups(s_currentTransformIndices, s_previousTransformIndices, false);
-  matchGroups(s_currentStableTransformIndices, s_previousStableTransformIndices, true);
+  const uint32_t configuredFps = frame_interpolation_fps();
+  matchGroups(s_currentTransformIndices, s_previousTransformIndices, false, false);
+  if (configuredFps == 60) {
+    // Recover CPU-deformed/direct geometry without reopening the old ambiguous
+    // material-only matcher. The stable key now includes render-pass context,
+    // and target60 accepts only a unique 1:1 leftover whose actual transforms
+    // are safe to interpolate. Repeated particles/instances remain snapped.
+    matchGroups(s_currentStableTransformIndices, s_previousStableTransformIndices, false, true);
+  } else {
+    matchGroups(s_currentStableTransformIndices, s_previousStableTransformIndices, true, false);
+  }
 
   s_perspectiveMatches = static_cast<uint32_t>(std::count_if(
       currentToPrevious.begin(), currentToPrevious.end(),
       [](size_t previousIndex) { return previousIndex != SIZE_MAX; }));
   // Interpolation never pauses on match quality: an unmatched draw just renders its
   // end-frame state, while a ratio gate flapped the whole output cadence instead.
-  const bool eligible = frame_interpolation_fps() != 0;
+  const bool eligible = configuredFps != 0;
 
   // Overlay observability: the live match ratio, and how often the scene sits in
   // low-match territory where inserted slots mostly duplicate draws.
@@ -1261,6 +1344,47 @@ void finalize_frame_interpolation() noexcept {
       const auto& current = s_currentFrameTransforms[task.currentTransformIndex].transform;
       auto& prepared = preparedTransforms[task.currentTransformIndex];
       if (task.indexedMatrices) {
+        if (configuredFps == 60) {
+          // Target60 is exact-instance-only. Even within an exact identity
+          // bucket, spawn/cull/multiplicity changes can leave one current draw
+          // unmatched; do not let the content-keyed palette resolver borrow a
+          // sibling's previous bones for that instance.
+          const size_t previousTransformIndex = currentToPrevious[task.currentTransformIndex];
+          if (previousTransformIndex >= s_previousFrameTransforms.size()) {
+            continue;
+          }
+          const auto& previous = s_previousFrameTransforms[previousTransformIndex].transform;
+          if (!previous.indexedMatrices || previous.usedMatrixMask != current.usedMatrixMask) {
+            continue;
+          }
+          prepared.previousProjectionEntry = previousTransformIndex;
+          bool allSlotsValid = true;
+          for (size_t slot = 0; slot < MaxPnMtx; ++slot) {
+            if ((current.usedMatrixMask & (1u << slot)) == 0) {
+              continue;
+            }
+            // At 30 -> 60 each palette slot represents a full 33 ms bone step.
+            // Rigid affine interpolation avoids the shrink/shear that a raw
+            // coefficient midpoint produces during character rotations. If a
+            // matrix is genuinely sheared/non-rigid, the pair is rejected and
+            // the whole skinned draw stays native for this midpoint.
+            const size_t pairOffset =
+                appendPreparedPair(previous.indexedMatrices->position[slot],
+                                   current.indexedMatrices->position[slot],
+                                   previous.indexedMatrices->normal[slot],
+                                   current.indexedMatrices->normal[slot], false);
+            prepared.indexedPairOffsets[slot] = pairOffset;
+            if (!preparedPairs[pairOffset].valid || !preparedPairs[pairOffset + 1].valid) {
+              allSlotsValid = false;
+              break;
+            }
+          }
+          prepared.indexedValid = allSlotsValid;
+          if (!allSlotsValid) {
+            prepared.previousProjectionEntry = kNoPreparedPair;
+          }
+          continue;
+        }
         const int32_t palette = paletteDrawIndex[task.currentTransformIndex];
         if (palette < 0) {
           continue;
@@ -1297,6 +1421,14 @@ void finalize_frame_interpolation() noexcept {
         prepared.previousProjectionEntry = previousTransformIndex;
         prepared.nonIndexedPairOffset = appendPreparedPair(
             previous.position, current.position, previous.normal, current.normal, false);
+        // If either matrix pair is unsafe, preserve the complete current
+        // uniform. Interpolating only the projection from the rejected partner
+        // makes an otherwise snapped draw warp against the wrong camera/object.
+        if (!preparedPairs[prepared.nonIndexedPairOffset].valid ||
+            !preparedPairs[prepared.nonIndexedPairOffset + 1].valid) {
+          prepared.previousProjectionEntry = kNoPreparedPair;
+          prepared.nonIndexedPairOffset = kNoPreparedPair;
+        }
       }
     }
 
@@ -1485,17 +1617,22 @@ std::array<gfx::Range, MaxInterpolatedFrames> record_interpolation_draw(
   ++s_perspectiveCandidates;
   const auto exactPrevious = s_previousTransformIndices.find(identity.combined);
   const auto stablePrevious = s_previousStableTransformIndices.find(stableIdentity);
-  const bool hasPreviousPartner =
-      (exactPrevious != s_previousTransformIndices.end() && !exactPrevious->second.empty()) ||
-      (stablePrevious != s_previousStableTransformIndices.end() && !stablePrevious->second.empty());
+  const bool hasExactPreviousPartner =
+      exactPrevious != s_previousTransformIndices.end() && !exactPrevious->second.empty();
+  const bool hasStablePreviousPartner =
+      stablePrevious != s_previousStableTransformIndices.end() && !stablePrevious->second.empty();
+  const bool hasPreviousPartner = hasExactPreviousPartner || hasStablePreviousPartner;
   if (hasPreviousPartner) {
     ++s_perspectiveMatchable;
   }
-  // A skinned draw with no identity partner can still borrow sibling transforms at
-  // seal time, so stage copies whenever the previous frame held any palette.
+  // Higher-rate modes keep the historical palette-sibling fallback for skinned
+  // draws. Target60 is deliberately exact-only: an unmatched skinned draw must
+  // snap to its current uniform rather than borrowing another draw's bone
+  // history and risking a one-frame deformation/warp.
+  const bool target60 = frame_interpolation_fps() == 60;
   const bool stageInterpolation =
       hasPreviousPartner ||
-      (uniformLayout.indexedMatrices && s_previousFrameHasIndexedMatrices);
+      (!target60 && uniformLayout.indexedMatrices && s_previousFrameHasIndexedMatrices);
   // A frame already split by a submitted prefix duplicates its slots instead of
   // replaying, so staging copies for the resumed suffix would only waste space.
   if (frame_interpolation_replay_safe() && stageInterpolation) {

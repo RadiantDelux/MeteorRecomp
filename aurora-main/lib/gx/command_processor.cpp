@@ -2916,10 +2916,13 @@ static void handle_draw_unmerged(GXPrimitive prim, GXVtxFmt fmt, u16 vtxCount,
     const HashType materialAndTopology =
         xxh3_hash(matrixTopologySignature,
                   xxh3_hash(bindGroups.textureBindGroup, pipelineDrawSignature));
+    const HashType renderContext = gfx::current_render_pass_signature();
+    const HashType contextualMaterial = hash_combine(materialAndTopology, renderContext);
     drawIdentity = FrameInterpolationDrawIdentity{
-        .combined = xxh3_hash(geometrySignature, materialAndTopology),
+        .combined = xxh3_hash(geometrySignature, contextualMaterial),
         .pipeline = pipelineDrawSignature,
         .texture = textureSignature,
+        .renderContext = renderContext,
         .matrixTopology = matrixTopologySignature,
     };
   }

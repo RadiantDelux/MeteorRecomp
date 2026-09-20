@@ -263,6 +263,19 @@ static void discard_suspended_efb_pass() noexcept {
 }
 
 static bool has_current_render_pass() noexcept { return g_currentRenderPass < g_renderPasses.size(); }
+
+HashType current_render_pass_signature() noexcept {
+  if (!has_current_render_pass()) {
+    return 0;
+  }
+  const auto& pass = g_renderPasses[g_currentRenderPass];
+  HashType signature = xxh3_hash(g_currentRenderPass);
+  signature = xxh3_hash(pass.targetSize.width, signature);
+  signature = xxh3_hash(pass.targetSize.height, signature);
+  signature = xxh3_hash(pass.msaaSamples, signature);
+  return signature;
+}
+
 static webgpu::TextureWithSampler g_offscreenColor;
 static webgpu::TextureWithSampler g_offscreenDepth;
 
@@ -1229,24 +1242,30 @@ static void render_pass_impl(const wgpu::RenderPassEncoder& pass, const std::vec
                              int32_t interpolatedFrame);
 
 static void render_impl(std::vector<RenderPass>& renderPasses, wgpu::CommandEncoder& cmd, int32_t interpolatedFrame,
-                        bool finalize) {
+                        bool finalize, bool replayResolveOnly) {
   ZoneScoped;
-  // Palette conversions, MSAA resolves and EFB copies depend on sealed frame state, not on the
-  // interpolation weight, so encode them on the native render and let replay slots sample them.
-  const bool encodeTextureBakes = interpolatedFrame < 0;
+  // Every replay slot must see the palette state from this sealed guest frame.
+  // The interpolated slot is encoded and submitted before the native slot, so
+  // relying on the later native render to refresh palette conversions makes the
+  // replay sample last-frame/uninitialized converted textures. Re-running the
+  // recorded conversion is host-only and queue ordering still leaves the final
+  // native result as the persistent state.
+  const bool nativeRender = interpolatedFrame < 0;
   for (u32 i = 0; i < renderPasses.size(); ++i) {
     const auto& passInfo = renderPasses[i];
-    if (encodeTextureBakes) {
-      for (const auto& conv : passInfo.paletteConvs) {
-        tex_palette_conv::run(cmd, conv);
-      }
+    for (const auto& conv : passInfo.paletteConvs) {
+      tex_palette_conv::run(cmd, conv);
     }
     const bool hasRenderWork = passInfo.clearColor || passInfo.clearDepth || !passInfo.commands.empty();
     if (i == renderPasses.size() - 1) {
       ASSERT(!passInfo.resolveTarget, "Final render pass must not have resolve target");
-    } else if (!(passInfo.resolveTarget && encodeTextureBakes) && !hasRenderWork) {
-      // Skip only empty intermediate passes: offscreen and scratch passes with resolves still have to
-      // run for later samplers, and on a replay slot a resolve-only pass has nothing to encode.
+    } else if (!(passInfo.resolveTarget && (nativeRender || replayResolveOnly)) &&
+               !hasRenderWork) {
+      // Target60 replays the complete recorded EFB-copy chain. An empty
+      // resolve-only pass can still feed a later pass in the same midpoint;
+      // deferring it to the native slot makes that midpoint sample the previous
+      // frame's texture and produces a midpoint/native flash. Higher-rate modes
+      // keep their historical policy until they are audited independently.
       continue;
     }
 
@@ -1383,12 +1402,31 @@ void seal_frame(SealedFrame& out) noexcept {
   g_currentRenderPass = UINT32_MAX;
 }
 
-void render(SealedFrame& frame, wgpu::CommandEncoder& cmd, int32_t interpolatedFrame, bool finalize) {
-  render_impl(frame.data().passes, cmd, interpolatedFrame, finalize);
+bool sealed_frame_pipelines_ready(const SealedFrame& frame) noexcept {
+  if (!skip_unready_pipelines()) {
+    return true;
+  }
+  wgpu::RenderPipeline pipeline;
+  for (const auto& passInfo : frame.data().passes) {
+    for (const auto& command : passInfo.commands) {
+      if (command.type != CommandType::Draw || command.data.draw.type != ShaderType::GX) {
+        continue;
+      }
+      if (!try_pipeline(command.data.draw.gx.pipeline, pipeline)) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+void render(SealedFrame& frame, wgpu::CommandEncoder& cmd, int32_t interpolatedFrame, bool finalize,
+            bool replayResolveOnly) {
+  render_impl(frame.data().passes, cmd, interpolatedFrame, finalize, replayResolveOnly);
 }
 
 void render(wgpu::CommandEncoder& cmd, int32_t interpolatedFrame, bool finalize) {
-  render_impl(g_renderPasses, cmd, interpolatedFrame, finalize);
+  render_impl(g_renderPasses, cmd, interpolatedFrame, finalize, false);
   if (finalize) {
     g_currentRenderPass = UINT32_MAX;
     const uint32_t logicalFrame = g_frameIndex == UINT32_MAX ? UINT32_MAX : g_frameIndex + 1;

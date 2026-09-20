@@ -7,6 +7,7 @@
 #include "runtime_config.h"
 #include "runtime_log.h"
 #include "wii_remote_input.h"
+#include "RuntimeConfig.h"
 
 #include <imgui.h>
 #include <SDL3/SDL_events.h>
@@ -80,10 +81,12 @@ bool g_audioMixWorker = RuntimeConfigFile::AudioMixWorkerEnabled(true);
 bool g_attenuateMusicWhenMediaPlays = RuntimeConfigFile::AttenuateMusicWhenMediaPlays(false);
 int g_frameInterpolationMode = [] {
     switch (RuntimeConfigFile::FrameInterpolationFps(0)) {
-    case 120:
+    case 60:
         return 1;
-    case 180:
+    case 120:
         return 2;
+    case 180:
+        return 3;
     default:
         return 0;
     }
@@ -206,7 +209,8 @@ constexpr std::array<ResolutionItem, 8> kResolutions = {{
     {"3x", 3.0f}, {"4x", 4.0f}, {"6x", 6.0f}, {"8x", 8.0f},
 }};
 
-constexpr std::array<uint32_t, 3> kFrameInterpolationTargetFps{0, 120, 180};
+constexpr std::array<uint32_t, 4> kFrameInterpolationTargetFps{0, 60, 120, 180};
+constexpr bool kIsMeteorTitle = RuntimeConfig::GAME_CODE == 0x52445350u; // RDSP
 
 bool IsHighResolutionScale(float scale) {
     return std::fabs(scale - 6.0f) < 0.001f || std::fabs(scale - 8.0f) < 0.001f;
@@ -801,13 +805,15 @@ void DrawGraphicsSettings() {
             "Requests the closest native-resolution display mode to the output frame "
             "rate (60 Hz, or the frame interpolation target).");
     }
-    constexpr std::array<const char*, 3> kFrameInterpolationModes{
-        "Off", "120 FPS", "180 FPS",
+    constexpr std::array<const char*, 4> kFrameInterpolationModes{
+        "Off", "60 FPS (30 -> 60)", "120 FPS", "180 FPS",
     };
     const char* currentFrameInterpolationMode =
         kFrameInterpolationModes[static_cast<size_t>(g_frameInterpolationMode)];
     bool frameInterpolationModeChanged = false;
-    if (ImGui::BeginCombo("Race frame interpolation (experimental)", currentFrameInterpolationMode)) {
+    const char* interpolationLabel =
+        kIsMeteorTitle ? "Battle frame interpolation (experimental)" : "Frame interpolation (experimental)";
+    if (ImGui::BeginCombo(interpolationLabel, currentFrameInterpolationMode)) {
         for (int mode = 0; mode < static_cast<int>(kFrameInterpolationModes.size()); ++mode) {
             const bool selected = g_frameInterpolationMode == mode;
             if (ImGui::Selectable(kFrameInterpolationModes[static_cast<size_t>(mode)], selected)) {
@@ -831,7 +837,13 @@ void DrawGraphicsSettings() {
         }
     }
     ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + 380.0f);
-    ImGui::TextDisabled("Frame interpolation is experimental, you might find visual artifacts");
+    if (kIsMeteorTitle) {
+        ImGui::TextDisabled(
+            "60 FPS inserts one midpoint frame only when gameplay is producing at 30 Hz; native 60 Hz menus stay native. "
+            "Guest simulation speed is unchanged. Experimental: visual artifacts are possible.");
+    } else {
+        ImGui::TextDisabled("Frame interpolation is experimental, you might find visual artifacts");
+    }
     ImGui::PopTextWrapPos();
     if (ImGui::Checkbox("Disable copy filter", &g_disableCopyFilter)) {
         aurora_set_disable_copy_filter(g_disableCopyFilter);
