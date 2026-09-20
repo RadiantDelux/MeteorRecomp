@@ -1,0 +1,2647 @@
+schema_version: 1
+workspace_root: "../.."
+
+# Copy this directory to projects/<your-project>/ and replace every placeholder.
+# project.platform is the generic guest-platform contract: wii or gamecube.
+project:
+  id: meteor
+  display_name: "Dragon Ball Z: Budokai Tenkaichi 3 (Europe)"
+  game_id: RDSPAF
+  region: P
+  platform: wii
+
+memory:
+  base: 0x80000000
+  size: 0x01800000
+  sda_base: 0x80631320
+  sda2_base: 0x806338C0
+
+inputs:
+  dol:
+    path: local-data/meteor/DATA/sys/main.dol
+    sha256: 004f206f760447655e5f4ac8ff554290ea573b186afe9c1f9c331f1b5786b16d
+
+  # Optional REL input for titles that use a statically known REL image.
+  # rel:
+  #   path: local-data/meteor/files/path/to/module.rel
+  #   load_address: 0x80500000
+  #   sha256: replace-with-lowercase-sha256
+
+  # Optional SEL/selectable-symbol input. Do not assume another title's SEL layout.
+  # sel:
+  #   path: local-data/meteor/files/path/to/title.sel
+  #   sha256: replace-with-lowercase-sha256
+
+translation:
+  # Whole-DOL function-boundary oracle derived with Ghidra HEADLESS/read-only.
+  # Entries here are speculative seeds, not hard roots: the translator keeps
+  # proven runtime callbacks in entry_points and may skip any map-only entry
+  # that cannot be decoded/lifted.  This avoids one-by-one blocker promotion
+  # without weakening the no-interiors/no-bypasses parity rule.
+  function_map:
+    path: projects/meteor/function_map_ghidra_safe.txt
+  entry_points:
+    - 0x8000403C
+    # Runtime-observed callback target from the table at *(r13-0x6B30)+0x104,
+    # indexed in 0x18-byte records by func_800C67AC. The caller loads the first
+    # word of the selected record into CTR and bctrls at 0x800C6930. Ghidra
+    # headless proves a clean function boundary: the preceding leaf returns at
+    # 0x800DF874; this entry starts its own 0x10-byte frame at 0x800DF878 and
+    # returns at 0x800DF8D4.
+    - 0x800DF878
+    # Fresh authoritative PID41288 / base_1789717460_pid41288 reached the
+    # terminal table-driven dispatcher in func_800C69B8 with architectural
+    # LR 0x800C6718. Same-PID state: global 0x92346420 has selector 2 and
+    # table 0x80374DD8, selecting record 0x80374E08; record slot +4 is exactly
+    # 0x800DF8D8. Ghidra HEADLESS/read-only proves standalone ownership:
+    # predecessor 0x800DF878 returns at 0x800DF8D4; target is exactly
+    # `li r3,2; blr` at 0x800DF8D8..0x800DF8DC; next framed boundary 0x800DF8E0.
+    - 0x800DF8D8
+    # Runtime-observed callback target from static table 0x80372BF8 (+4).
+    # Ghidra HEADLESS proves a clean independent function at 0x8005F1E0:
+    # predecessor returns at 0x8005F1DC, this function owns its own frame and
+    # returns at 0x8005F2E8. Caller 0x8006ACC4 loads table+4 and bctrls with
+    # architectural return LR 0x8006AD50, matching the runtime fatal.
+    - 0x8005F1E0
+    # Runtime-observed table callback. Ghidra HEADLESS proves a standalone
+    # function at 0x80063BC0 (own frame/epilogue, returns at 0x80063C2C).
+    # Caller 0x8006AE2C loads r12 from callback entry +4 and bctrls at
+    # 0x8006AEC4, producing LR 0x8006AEC8 exactly as observed in the fatal.
+    - 0x80063BC0
+    - 0x802769C4
+    - 0x80273E9C
+    - 0x8028900C
+    - 0x80288D64
+    - 0x80276238
+    - 0x80276110
+    - 0x80276C44
+    - 0x802760A8
+    - 0x80289A1C
+    - 0x802762F0
+    - 0x80263AD8
+    - 0x80263EE8
+    - 0x80289318
+    # Runtime-observed BTM/L2CAP callback at LR 0x8028BEFC. Ghidra headless
+    # shows the preceding routine returns at 0x802895D8; this entry starts its
+    # own 0x20-byte frame, returns at 0x80289820, and the next independent
+    # routine begins at 0x80289824. func_8028BD3C loads this callback from
+    # descriptor+0x1C and dispatches it through CTR.
+    - 0x802895DC
+    - 0x80264278
+    - 0x80264794
+    # Wii Remote input report 0x35 handler. Runtime reaches it through the
+    # report-dispatch table at 0x8039333C after the virtual Nunchuk switches to
+    # continuous Core+Accel+Extension mode. Ghidra headless proves a clean
+    # boundary: prior handler returns at 0x802655B8; this entry starts its own
+    # frame at 0x802655BC, returns at 0x80265E24, and the next function starts
+    # at 0x80265E28.
+    - 0x802655BC
+    # Runtime-observed indirect controller-processing helper from 0x8025A3E8.
+    # Ghidra headless proves the previous routine returns at 0x8025A1C0; this
+    # function owns a 0x20-byte frame at 0x8025A1C4..0x8025A3E4, and the next
+    # independent function starts at 0x8025A3E8. The caller explicitly forms
+    # 0x8025A1C4 in r31 and dispatches it via CTR at 0x8025A4B8.
+    - 0x8025A1C4
+    - 0x802767A8
+    - 0x8023E894
+    - 0x802103A0
+    # Vtable at 0x8062FAC8, validated in Ghidra headless. 0x8024F978 is a
+    # blr before the first entry; each following thunk is separated by an
+    # unconditional tail branch, so these are real function entries rather
+    # than interior basic blocks. The first slot was observed live via
+    # func_8024F9A8 at LR 0x8030ACE8.
+    - 0x8024F97C
+    - 0x8024F98C
+    - 0x8024F994
+    - 0x8024F9A4
+    # Runtime-observed vtable method at LR 0x8030B36C. Ghidra headless shows
+    # the preceding function 0x8031A3FC returns at 0x8031A4DC; this entry is a
+    # separate argument-adjusting thunk tail-branching to 0x8031A1F4.
+    - 0x8031A4E0
+    # Runtime-observed vtable method at LR 0x8030B388. Ghidra headless shows
+    # the preceding 0x8031BEEC routine returns at 0x8031C0A8 and this address
+    # begins a separate 0x60-byte-frame function with its own prologue.
+    - 0x8031C0AC
+    # Runtime-observed virtual method at LR 0x80322044. Ghidra headless shows
+    # 0x80323E60 returns at 0x80323FA4 and this address begins a distinct
+    # 0x10-byte-frame function with its own prologue.
+    - 0x80323FA8
+    # Runtime-observed vtable target reached from 0x80323FA8. Ghidra headless
+    # shows 0x80323FA8 returns at 0x8032401C and this address begins another
+    # distinct 0x10-byte-frame function with its own LR save/prologue.
+    - 0x80324020
+    # Runtime-observed virtual method at LR 0x80322088. Ghidra headless shows
+    # the preceding routine starting at 0x80324068 returns at 0x803240CC;
+    # this address begins a separate 0x20-byte-frame function.
+    - 0x803240D0
+    # Runtime-observed virtual method at LR 0x80322138. The preceding
+    # 0x8031A4E0 entry is a tail thunk ending in `b 0x8031A1F4` at 0x8031A4FC;
+    # Ghidra headless shows this address begins a distinct 0x20-byte-frame routine.
+    - 0x8031A500
+    # Runtime-observed indirect target at LR 0x8034D5DC. Ghidra headless shows
+    # the preceding routine returns at 0x80350EB8; this address starts a separate
+    # function with its own 0x10-byte frame and LR save.
+    - 0x80350EBC
+    # Runtime-observed indirect target at LR 0x8031B890. Ghidra headless shows
+    # the immediately preceding tiny methods end in BLR at 0x8032095C/0x80320960;
+    # this address starts a distinct routine with its own 0x20-byte frame.
+    - 0x80320964
+    # Runtime-observed indirect target at LR 0x8030B57C. Ghidra headless shows
+    # func_8031C0AC returns at 0x8031C44C; this address starts a distinct routine
+    # with its own 0x40-byte frame and LR save.
+    - 0x8031C450
+    # Runtime-observed indirect target at LR 0x8031C628. Ghidra headless shows
+    # the preceding routine returns at 0x803194DC; this address starts a distinct
+    # routine with its own 0x30-byte frame and LR save.
+    - 0x803194E0
+    # Runtime-observed indirect target at LR 0x8030B5F4. Ghidra headless shows
+    # the preceding routine returns at 0x803210D8; this address starts a distinct
+    # routine with its own 0x20-byte frame and LR save.
+    - 0x803210DC
+    # Runtime-observed indirect target at LR 0x80321140. Ghidra headless shows
+    # the preceding routine returns at 0x80319664; this address starts a distinct
+    # routine with its own 0x20-byte frame and LR save.
+    - 0x80319668
+    # Runtime-observed indirect target at LR 0x80319710. Ghidra headless shows
+    # the preceding routine returns at 0x80320A20; this address starts a distinct
+    # routine with its own 0x20-byte frame and LR save.
+    - 0x80320A24
+    # Runtime-observed indirect target at LR 0x80319710. Ghidra headless shows
+    # the preceding routine returns at 0x80325024; this address starts a distinct
+    # routine with its own 0x20-byte frame and LR save.
+    - 0x80325028
+    # Runtime-observed indirect target at LR 0x8030BA48. Ghidra headless shows
+    # the preceding function returns at 0x8030BD88; this address is a separate
+    # two-instruction setter thunk (`stw r4,4(r3); blr`).
+    - 0x8030BD8C
+    # Runtime-observed indirect target at LR 0x803154A4. Ghidra headless shows
+    # the preceding thunk returns at 0x8030BD90; this address is a distinct
+    # byte-setter thunk (stb r4,0x24(r3); blr).
+    - 0x8030BD94
+    # Runtime-observed indirect target at LR 0x8030BBB4. Ghidra headless shows
+    # the preceding byte setter returns at 0x8030BD98; this address is a distinct
+    # two-instruction word setter (`stw r4,0x24(r3); blr`).
+    - 0x8030BD9C
+    # Runtime-observed indirect target at LR 0x802A923C. Ghidra headless shows
+    # the previous routine ends at 0x802ABFA4; this address is a distinct
+    # leaf initializer storing r3/r4 into two globals before BLR at 0x802ABFB8.
+    # Separate runtime-observed thunk immediately before it: Ghidra headless
+    # shows 0x802ABFA0 ends the previous routine and 0x802ABFA4 is a standalone BLR.
+    - 0x802ABFA4
+    - 0x802ABFA8
+    # Runtime-observed indirect target at LR 0x802A923C. Ghidra headless shows
+    # the preceding routine restores LR/stack and returns at 0x802AA698; this
+    # address is a distinct leaf initializer storing r3/r4 into two globals.
+    - 0x802AA69C
+    # Runtime-observed indirect target at LR 0x802AA400. An earlier Ghidra
+    # headless dump proves 0x802AA6AC is the BLR of the preceding initializer;
+    # this address starts a distinct 0x150-byte-frame routine with its own LR save.
+    - 0x802AA6B0
+    # Runtime-observed indirect target at LR 0x802A9FE0. Ghidra headless shows
+    # the preceding routine restores LR/stack and returns at 0x802AA63C; this
+    # address starts a distinct 0x10-byte-frame routine with its own LR save.
+    - 0x802AA640
+    # Runtime-observed virtual method at LR 0x802A3B94. The caller loads
+    # object->vtable[5] (vptr+0x14) and dispatches through CTR. Ghidra headless
+    # proves this is a clean function boundary: the preceding routine returns
+    # with BLR at 0x802ACF7C; this entry starts its own 0x10-byte frame at
+    # 0x802ACF80 and returns with BLR at 0x802ACFB4.
+    - 0x802ACF80
+    # Runtime-observed indirect target at LR 0x802A99D4. Ghidra headless shows
+    # the preceding routine restores LR/stack and returns at 0x802AA80C; this
+    # address starts a distinct 0x120-byte-frame routine with its own LR save.
+    - 0x802AA810
+    # Runtime-observed GCD vtable method at LR 0x802A9E00. Ghidra headless
+    # shows the preceding routine returns at 0x802AAA80; this address starts
+    # a distinct 0x10-byte-frame function with its own LR-save prologue.
+    - 0x802AAA84
+    # Runtime-observed low-level vtable method at LR 0x802A9C80. Ghidra
+    # headless shows the preceding routine restores LR/stack and returns at
+    # 0x802AAA2C; this address starts a distinct 0x10-byte-frame function.
+    - 0x802AAA30
+    # Runtime-observed callback target at LR 0x80271710. Ghidra headless shows
+    # the preceding routine restores LR/stack and returns at 0x802700A4; this
+    # address is a distinct leaf function ending at 0x802700D0.
+    - 0x802700A8
+    # Runtime-observed callback target at LR 0x8027172C. The same Ghidra
+    # headless dump shows 0x802700A8 ends at 0x802700D0; this address starts
+    # a distinct 0x20-byte-frame function with its own LR-save prologue.
+    - 0x802700D4
+    # Runtime-observed callback/indirect-jump target after the Bluetooth USB
+    # open path became live. Ghidra headless shows the preceding routine ends
+    # at 0x8027016C; this address starts a distinct 0x10-byte-frame function.
+    - 0x80270170
+    # Runtime-observed indirect callback from the BTE event dispatcher at
+    # LR 0x802722D0 after periodic OSAlarm delivery was restored. Ghidra
+    # headless shows 0x80274DA8 returns at 0x80274DDC; this address starts a
+    # distinct 0x20-byte-frame dispatcher with its own LR/register-save prologue.
+    - 0x80274DE0
+    # Runtime-observed BTE table callback at LR 0x80274E48. Ghidra headless
+    # shows the preceding 0x802725F4 routine restores LR/stack and returns at
+    # 0x80272634; this address starts a distinct 0x20-byte-frame init routine.
+    - 0x80272638
+    # Runtime-observed BTE table callback at LR 0x80274E48 after 0x802777C8 was
+    # crossed. Ghidra headless shows the preceding routine restores LR/stack and
+    # returns at 0x802728B0; this address is a distinct two-instruction tail thunk
+    # (`addi r3,r3,8; b 0x8027B000`), not an interior entry of 0x80272638.
+    - 0x802728B4
+    # Runtime-observed BTE table callback at LR 0x80274E48 after 0x802728B4 was
+    # crossed. The same Ghidra headless dump shows 0x802728B4 tail-branches at
+    # 0x802728B8, while this address starts a distinct 0x10-byte-frame routine
+    # with its own LR save and calls into 0x8027BC40/0x8027C0BC.
+    - 0x802728BC
+    # Runtime-observed BTE callback at LR 0x80274E48 after the virtual remote
+    # completed remote-version/features exchange. Ghidra headless shows the
+    # preceding routine restores LR/stack and returns at 0x802740E4; this
+    # address starts a distinct 0x130-byte-frame routine with its own LR save.
+    - 0x802740E8
+    # Runtime-observed BTE event-dispatch callback at LR 0x802722D0. Ghidra
+    # headless shows the preceding routine returns at 0x802777C4; this address
+    # starts a distinct 0x10-byte-frame message dispatcher.
+    - 0x802777C8
+    # Runtime-observed L2CAP/HID callback at LR 0x8028B280 after the first real
+    # inbound ACL Connection Request (PSM 0x0011, SCID 0x0040). Ghidra headless
+    # shows the preceding routine restores LR/stack and returns at 0x80288460;
+    # this address starts a distinct 0x30-byte-frame routine with its own LR save.
+    - 0x80288464
+    # Runtime-observed GCD vtable method at LR 0x802A9EC0. Ghidra headless
+    # shows the preceding 0x802AAB48 routine restores LR/stack and returns at
+    # 0x802AABA4; this address starts a distinct 0x20-byte-frame function.
+    - 0x802AABA8
+    # Runtime-observed indirect-jump target while servicing the same GCD path.
+    # Ghidra headless shows the preceding routine restores LR/stack and returns
+    # at 0x802AAED4; this address starts a distinct 0x20-byte-frame function.
+    - 0x802AAED8
+    # Runtime-observed indirect target at LR 0x8029E9F0. Ghidra headless shows
+    # the preceding routine restores LR/stack and returns at 0x802ACD48; this
+    # address starts a distinct 0x90-byte-frame routine with its own LR save.
+    - 0x802ACD4C
+    # Runtime-observed indirect target at LR 0x802AA078. Ghidra headless shows
+    # the preceding routine restores LR/stack and returns at 0x802AB084; this
+    # address starts a distinct 0x10-byte-frame routine with its own LR save.
+    - 0x802AB088
+    # Runtime-observed indirect target at LR 0x802A07DC. Ghidra headless shows
+    # the preceding routine restores LR/stack and returns at 0x802AD074; this
+    # address starts a distinct 0x10-byte-frame routine with its own LR save.
+    - 0x802AD078
+    # Runtime-observed indirect target at LR 0x802A1240. Ghidra headless shows
+    # the preceding routine restores LR/stack and returns at 0x802AD420; this
+    # address starts a distinct 0x20-byte-frame routine with its own LR save.
+    - 0x802AD424
+    # Runtime-observed indirect target at LR 0x802A125C. Ghidra headless shows
+    # the preceding routine restores LR/stack and returns at 0x802AD64C; this
+    # address starts a distinct 0x20-byte-frame routine with its own LR save.
+    - 0x802AD650
+    # Runtime-observed vtable method at LR 0x802A147C. Ghidra headless shows
+    # func_802AD0C8 returns at 0x802AD1A4; this address starts a distinct
+    # 0x20-byte-frame routine with its own LR/register-save prologue and BLR.
+    - 0x802AD1A8
+    # Runtime-observed indirect target at LR 0x8030BAB0. Ghidra headless shows
+    # the preceding routine returns at 0x803151DC; this address starts a distinct
+    # virtual tail-dispatch thunk ending in bctr.
+    - 0x803151E0
+    # Runtime-observed indirect-jump target reached by the bctr at 0x803151FC.
+    # Ghidra headless shows this address starts a distinct 0x50-byte-frame routine.
+    - 0x80315200
+    # Runtime-observed indirect target at LR 0x803152B0. Ghidra headless shows
+    # the preceding routine returns at 0x80314B18; this address starts a distinct
+    # leaf initializer ending in blr at 0x80314B44.
+    - 0x80314B1C
+    # Runtime-observed indirect target at LR 0x8031555C. Ghidra headless shows
+    # the preceding initializer returns at 0x80314B44; this address starts a
+    # distinct 0x20-byte-frame routine with its own LR/register saves.
+    - 0x80314B48
+    # Runtime-observed indirect target at LR 0x80314B7C. Ghidra headless shows
+    # the preceding thunk returns at 0x803149A4; this address is a distinct
+    # two-instruction accessor (`lwz r3,0x20(r3); blr`).
+    - 0x803149A8
+    # Runtime-observed indirect target at LR 0x80314B98. Ghidra headless shows
+    # the preceding routine returns at 0x80314C08; this address is a distinct
+    # two-instruction setter (`stw r4,0x28(r3); blr`).
+    - 0x80314C0C
+    # Runtime-observed indirect target at LR 0x80315404. Ghidra headless shows
+    # the preceding routine returns at 0x803155B0; this address is a distinct
+    # two-instruction setter thunk (`stw r4,0x2C(r3); blr`).
+    - 0x803155B4
+    # Runtime-observed indirect target at LR 0x8030BB0C. Ghidra headless shows
+    # the preceding setter at 0x803155B4 ends with BLR at 0x803155B8; this
+    # address starts a distinct 0x20-byte-frame routine with its own LR save.
+    - 0x803155BC
+    # Runtime-observed indirect target at LR 0x80315450. Ghidra headless shows
+    # the preceding routine returns at 0x80321DF8; this address is a distinct
+    # leaf accessor (subi r3,r13,0x5B30; blr).
+    - 0x80321DFC
+    # Runtime-observed indirect target at LR 0x80315450. Ghidra headless shows
+    # the preceding routine returns at 0x8030C358; this address is a distinct
+    # leaf accessor (`subi r3,r13,0x5B38; blr`).
+    - 0x8030C35C
+    - 0x80232F14
+    # Runtime-observed indirect target at LR 0x80315450. Ghidra headless shows
+    # the preceding routine returns at 0x8031A8AC; this address is a distinct
+    # two-instruction accessor (`subi r3,r13,0x5B50; blr`).
+    - 0x8031A8B0
+    - 0x8031A8B8
+    # Runtime-observed indirect target at LR 0x80315450. Ghidra headless shows
+    # the preceding tail-dispatch thunk ends at 0x8032756C; this address is a
+    # distinct leaf accessor (`subi r3,r13,0x5B20; blr`) before the separate
+    # pre-existing root at 0x80327578.
+    - 0x80327570
+    # Runtime-observed indirect target at LR 0x80315450. Ghidra headless shows
+    # the preceding routine returns at 0x80324C98; this address is a distinct
+    # leaf accessor (`subi r3,r13,0x5B28; blr`) before the separate pre-existing
+    # root at 0x80324CA4.
+    - 0x80324C9C
+    # Runtime-observed indirect target at LR 0x8030BAC8. Ghidra headless shows
+    # the preceding routine returns at 0x80314F74; this address starts a distinct
+    # 0x20-byte-frame routine with its own LR/register-save prologue.
+    - 0x80314F78
+    - 0x803216E4
+    - 0x80321E04
+    - 0x80324CA4
+    - 0x80327578
+    - 0x8032ED48
+    - 0x8032FF74
+    - 0x80335878
+    - 0x80335F7C
+    - 0x80342AB8
+    - 0x80342F44
+    - 0x80344AA8
+    - 0x80344FB0
+    - 0x8034656C
+    - 0x8034C2B0
+    - 0x8034C3F4
+    - 0x8034C7F4
+    - 0x8035B774
+    - 0x803216E4
+    - 0x80321E04
+    - 0x80324CA4
+    - 0x80327578
+    - 0x8032ED48
+    - 0x8032FF74
+    - 0x80335878
+    - 0x80335F7C
+    - 0x80342AB8
+    - 0x80342F44
+    - 0x80344AA8
+    - 0x80344FB0
+    - 0x8034656C
+    - 0x8034C2B0
+    - 0x8034C3F4
+    - 0x8034C7F4
+    - 0x8035B774
+    - 0x8031A8B8
+    # Runtime-observed indirect target at LR 0x8006AEC8. Ghidra HEADLESS shows
+    # the preceding routine ends at 0x80089F54 with blr; 0x80089F58 starts an
+    # independent 0x10-byte-frame initializer and returns at 0x80089F90.
+    - 0x80089F58
+    # Runtime-observed callback target at LR 0x8006B038 after 0x80089F58 was
+    # crossed. Ghidra HEADLESS proves the prior callback path returns at
+    # 0x801580C8; 0x801580CC starts its own aligned stack/LR-save frame, returns
+    # at 0x8015830C, and the next function starts at 0x80158310. Caller
+    # 0x8006AEF0 loads table 0x80378260 + 4 and bctrls this exact entry.
+    - 0x801580CC
+    # Runtime-observed callback target from RDSPAF dispatcher table key=2.
+    # PID32176 resolved global 0x8062A3EC -> table 0x80370AF0, entry +8 =
+    # { key=2, callback=0x8000CB6C }; caller 0x8000E130 dispatches it via
+    # bctrl with architectural LR 0x8000E4D0. Ghidra HEADLESS proves a clean
+    # boundary: predecessor returns at 0x8000CB68, this entry owns a 0x10-byte
+    # frame and returns at 0x8000CBA0; the next independent leaf is 0x8000CBA4.
+    - 0x8000CB6C
+    # Fresh PID43456 / base_1789704351_pid43456 reached the same retail
+    # dispatcher through func_8000E130 with architectural LR 0x8000E4D0.
+    # Generated func_8000DD10 resolves global 0x8062A3EC -> table 0x80370AF0,
+    # scans 8-byte {key,callback} records, and returns word1 for the matching key.
+    # Same-PID MEM1 proves 0x80370B00 = { key=3, callback=0x8000CBA4 };
+    # crash CTR/r12/r5 are exactly 0x8000CBA4. Ghidra HEADLESS/read-only proves
+    # standalone ownership: predecessor 0x8000CB6C..0x8000CBA0 returns cleanly;
+    # target 0x8000CBA4 is a distinct two-instruction leaf (li r3,1; blr);
+    # next framed boundary starts at 0x8000CBAC and returns at 0x8000CC18.
+    - 0x8000CBA4
+    # Fresh PID36532 / base_1789705074_pid36532 advanced the same retail
+    # dispatcher. Same-PID MEM1 proves global 0x8062A3EC -> table 0x80370AF0
+    # and live matched record 0x80370B10 = { key=5, callback=0x8000CC1C };
+    # func_8000DD10 returns that callback and func_8000E130 dispatches it with
+    # architectural LR 0x8000E4D0. Ghidra HEADLESS/read-only proves standalone
+    # ownership: predecessor 0x8000CBAC..0x8000CC18 returns cleanly; target
+    # 0x8000CC1C owns its frame and common epilogue through 0x8000CDA8; the
+    # next real boundary is 0x8000CDAC.
+    - 0x8000CC1C
+    # Fresh PID24340 / base_1789704633_pid24340 advanced the same retail
+    # dispatcher. Same-PID MEM1 proves global 0x8062A3EC -> table 0x80370AF0
+    # and live matched record 0x80370B28 = { key=9, callback=0x8000CFF8 };
+    # func_8000DD10 returns that callback and func_8000E130 dispatches it with
+    # architectural LR 0x8000E4D0. Ghidra HEADLESS/read-only proves standalone
+    # ownership: predecessor 0x8000CE64..0x8000CFF4 returns cleanly; target
+    # 0x8000CFF8 owns a framed body and epilogue through 0x8000D09C; the next
+    # real boundary is 0x8000D0A0.
+    - 0x8000CFF8
+    # Runtime-observed callback target from the same RDSPAF dispatcher table.
+    # PID34768 resolved key=0x10 -> callback=0x8000D9F8 and dispatched it via
+    # the retail 0x8000DD10 -> 0x8000E4CC bctrl path (LR 0x8000E4D0).
+    # Ghidra HEADLESS proves clean boundaries: predecessor returns at
+    # 0x8000D9F4, this routine owns a 0x10-byte frame and returns at
+    # 0x8000DAA8; the next independent leaf begins at 0x8000DAAC.
+    - 0x8000D9F8
+    # Fresh PID24564 resolved retail dispatcher key 0x516 to 0x80025ACC
+    # (table entry at 0x80370BE8) and reached it through the proven
+    # 0x8000DD10 -> 0x8000E4CC bctrl path. Ghidra HEADLESS proves this is
+    # a standalone callback: predecessor returns at 0x80025AC8, target owns
+    # a 0x20-byte frame and returns at 0x80025CA4, next routine starts 0x80025CA8.
+    - 0x80025ACC
+    # Fresh PID10060 resolved retail dispatcher key 0x0A to callback 0x8000D158
+    # (table entry 0x80370B38/0x80370B3C) through the proven 0x8000DD10 ->
+    # 0x8000E4CC bctrl path. Ghidra HEADLESS proves a clean standalone function:
+    # predecessor returns at 0x8000D154, target owns a 0x20-byte frame and
+    # returns at 0x8000D1D8; the next separate routine starts at 0x8000D1DC.
+    - 0x8000D158
+    # Fresh PID20508 resolved the next retail dispatcher entry, key 0x0B at
+    # 0x80370B40, to callback 0x8000D1DC. Ghidra HEADLESS independently proves
+    # the predecessor returns at 0x8000D1D8, this routine owns a fresh 0x10-byte
+    # frame and returns at 0x8000D24C, and the next function starts 0x8000D250.
+    - 0x8000D1DC
+    # Fresh PID29008 resolved dispatcher key 0x0C at 0x80370B48 to callback
+    # 0x8000D250. Ghidra HEADLESS proves a standalone routine: predecessor
+    # returns at 0x8000D24C; this entry owns a 0x60-byte frame and returns at
+    # 0x8000D3CC; the next independent function starts at 0x8000D3D0.
+    - 0x8000D250
+    # Fresh PID33676 resolved dispatcher key 0x0F at 0x80370B60 to callback
+    # 0x8000D980. Ghidra HEADLESS proves a standalone function: predecessor
+    # returns at 0x8000D97C; this entry owns a fresh 0x10-byte frame and returns
+    # at 0x8000D9F4; the next independent function is the existing 0x8000D9F8.
+    - 0x8000D980
+    # Fresh PID35660 resolved dispatcher key 0x2BD at 0x80370BD0 to callback
+    # 0x800259D0. Ghidra HEADLESS proves a standalone function: the immediate
+    # predecessor is a separate leaf returning at 0x800259CC; this entry owns a
+    # fresh 0x10-byte frame and returns at 0x80025A6C; next function is 0x80025A70.
+    - 0x800259D0
+    # Fresh PID22512 resolved dispatcher key 0x2BE at 0x80370BD8 to callback
+    # 0x80025A70. Ghidra HEADLESS proves a standalone function: predecessor
+    # returns at 0x80025A6C; this entry owns a fresh 0x10-byte frame, returns at
+    # 0x80025AC8, and the next independent function starts at 0x80025ACC.
+    - 0x80025A70
+    # Fresh PID17116 / base_1789705344_pid17116 resolved retail dispatcher
+    # key 0x321 from live row 0x80370B70 to callback 0x8002524C through the
+    # proven func_8000DD10 -> func_8000E130 path with architectural LR
+    # 0x8000E4D0. Same-PID MEM1 proves 0x8062A3EC -> 0x80370AF0 and
+    # 0x80370B70 = { key=0x321, callback=0x8002524C }. Ghidra HEADLESS/read-only
+    # proves standalone ownership: predecessor terminates at 0x80025248 blr;
+    # target owns its frame/epilogue through 0x80025330; next boundary 0x80025334.
+    - 0x8002524C
+    # Fresh PID42636 / base_1789705681_pid42636 resolved retail dispatcher
+    # key 0x4B1 from live row 0x80370C08 to callback 0x80024E14 through the
+    # proven func_8000DD10 -> func_8000E130 path with architectural LR
+    # 0x8000E4D0. Same-PID MEM1 proves 0x8062A3EC -> 0x80370AF0 and
+    # 0x80370C08 = { key=0x4B1, callback=0x80024E14 }. Ghidra HEADLESS/read-only
+    # proves standalone ownership: predecessor 0x80024E10 terminates with blr;
+    # target owns its function through 0x80024EE4 blr; next boundary 0x80024EE8.
+    - 0x80024E14
+    # Fresh PID38504 / base_1789706847_pid38504 resolved retail dispatcher
+    # key 0x4B2 from live row 0x80370C10 to callback 0x80024FD8 through the
+    # proven func_8000DD10 -> func_8000E130 path with architectural LR
+    # 0x8000E4D0. Same-PID MEM1 proves 0x8062A3EC -> 0x80370AF0 and
+    # 0x80370C10 = { key=0x4B2, callback=0x80024FD8 }. Ghidra HEADLESS/read-only
+    # proves standalone ownership: predecessor 0x80024F94..0x80024FD4 returns
+    # cleanly; target owns its frame and epilogue through 0x80025248 blr;
+    # next real boundary is existing 0x8002524C.
+    - 0x80024FD8
+    # Fresh PID46560 / base_1789707091_pid46560 resolved retail dispatcher
+    # key 0x385 from live row 0x80370BC0 to callback 0x80025618 through the
+    # proven func_8000DD10 -> func_8000E130 path with architectural LR
+    # 0x8000E4D0. Same-PID MEM1 proves 0x8062A3EC -> 0x80370AF0 and
+    # 0x80370BC0 = { key=0x385, callback=0x80025618 }. Ghidra HEADLESS/read-only
+    # proves standalone ownership: predecessor 0x800255DC..0x80025614 returns
+    # cleanly; target owns its frame/epilogue through 0x8002572C blr;
+    # next real boundary is 0x80025730.
+    - 0x80025618
+    # Fresh PID46708 / base_1789707367_pid46708 resolved retail dispatcher
+    # key 0x643 from live row 0x80370C50 to callback 0x80025E8C through the
+    # proven func_8000DD10 -> func_8000E130 path with architectural LR
+    # 0x8000E4D0. Same-PID MEM1 proves 0x8062A3EC -> 0x80370AF0 and
+    # 0x80370C50 = { key=0x643, callback=0x80025E8C }. Ghidra HEADLESS/read-only
+    # proves standalone ownership: predecessor terminates at 0x80025E88 blr;
+    # target owns its frame/epilogue through 0x80026040 blr; next real boundary
+    # is 0x80026044, a separate frameless tail routine.
+    - 0x80025E8C
+    # Fresh PID35624 resolved an indirect callback at LR 0x800C6934 to
+    # 0x800DE644. Ghidra HEADLESS proves a standalone function: predecessor
+    # returns at 0x800DE640; this entry owns a fresh 0x10-byte frame, returns at
+    # 0x800DE6BC, and the next independent function starts at 0x800DE6C0.
+    - 0x800DE644
+    # Fresh PID45900 / base_1789707629_pid45900 reached this target through
+    # func_800C69B8's terminal function-pointer bctr (architectural caller LR
+    # remains 0x800C6718). Same-PID provenance: MEM1 0x8062A7F0 -> object
+    # 0x92353D60; MEM2 object index=1 and table base=0x80374D30 select record
+    # 0x80374D48; exact slot +4 is 0x800DE6C0. HEADLESS/read-only confirms
+    # standalone ownership: predecessor 0x800DE644 returns at 0x800DE6BC;
+    # target owns frame 0x800DE6C0..0x800DE7D0; next boundary 0x800DE7D4.
+    - 0x800DE6C0
+    # Fresh authoritative PID20980 / base_1789708324_pid20980 reached callback
+    # 0x800F8F14 from func_80054FE4 with architectural LR 0x80055168.
+    # Same-PID MEM2 proves object 0x92341140 has state [obj+0x13E4] = 4;
+    # func_80054FE4 indexes callback table 0x80372558, selecting exact slot
+    # 0x80372568, and same-PID MEM1 proves [0x80372568] = 0x800F8F14.
+    # Ghidra HEADLESS/read-only proves standalone ownership: predecessor
+    # 0x800F8DBC returns at 0x800F8F10 blr; target owns its framed body through
+    # 0x800F92F0 blr; next real boundary is 0x800F92F4.
+    - 0x800F8F14
+    # Fresh authoritative PID39584 / base_1789708638_pid39584 reached this
+    # callback through func_8006A690 with architectural LR 0x8006A6DC.
+    # Same-PID MEM2 proves node 0x9257CA80 -> descriptor [node+0x28]
+    # 0x80372BF8; same-PID MEM1 proves descriptor slot +0 = 0x8005F2F0.
+    # Ghidra HEADLESS/read-only proves this is a standalone one-instruction
+    # BLR callback stub: substantive predecessor ends 0x8005F2E8; sibling stub
+    # 0x8005F2EC is separate; target is 0x8005F2F0 blr; next framed boundary
+    # is 0x8005F2F4.
+    - 0x8005F2F0
+    # Fresh authoritative PID46772 / base_1789708905_pid46772 reached this
+    # callback through func_8006A690 with architectural LR 0x8006A6DC.
+    # Same-PID MEM2 proves live object 0x9257CAE0 -> descriptor [obj+0x28]
+    # 0x80372CA8; same-PID MEM1 proves descriptor slot +0 = 0x80063C70.
+    # Ghidra HEADLESS/read-only proves standalone ownership: prior routine
+    # ends at 0x80063C6C blr; target itself is the one-instruction BLR stub
+    # 0x80063C70; next framed function begins at 0x80063C74.
+    - 0x80063C70
+    # Fresh authoritative PID20788 / base_1789709255_pid20788 reached this
+    # callback through func_8006A690 with architectural LR 0x8006A6DC.
+    # Same-PID MEM2 proves live object 0x92691E40 -> descriptor [obj+0x28]
+    # 0x80373540; same-PID MEM1 proves descriptor slot +0 = 0x80089FC4.
+    # Ghidra HEADLESS/read-only proves standalone ownership: predecessor
+    # 0x80089F94..0x80089FC0 owns its frame and returns at 0x80089FC0 blr;
+    # target owns frame/body through 0x8008A0A4 blr; next real boundary is
+    # 0x8008A0A8 (tail-branch thunk), followed by framed 0x8008A0AC.
+    - 0x80089FC4
+    # Fresh authoritative PID6120 / base_1789709499_pid6120 reached this
+    # callback through func_8006A690 with architectural LR 0x8006A6DC.
+    # Same-PID MEM2 proves live object 0x92691E80 -> descriptor [obj+0x28]
+    # 0x8037BA78; same-PID MEM1 proves descriptor slot +0 = 0x802036BC.
+    # Ghidra HEADLESS/read-only proves this is NOT interior of historical
+    # root 0x80203398: predecessor 0x80203680..0x802036B8 owns its frame and
+    # returns at 0x802036B8 blr; target owns frame/body through 0x8020378C
+    # blr; next real boundary is framed function 0x80203790.
+    - 0x802036BC
+    # Fresh authoritative PID47296 / base_1789709806_pid47296 reached this
+    # callback through func_8006A690 with architectural LR 0x8006A6DC.
+    # Same-PID MEM2 proves live object 0x92691EC0 -> descriptor [obj+0x28]
+    # 0x8037B110; same-PID MEM1 proves descriptor slot +0 = 0x801CD458.
+    # Ghidra HEADLESS/read-only proves this is NOT interior of historical root
+    # 0x801CD328: predecessor 0x801CD420..0x801CD454 owns its frame and returns
+    # at 0x801CD454 blr; target is the independent leaf 0x801CD458..0x801CD464
+    # ending in blr; next real boundary is framed function 0x801CD468.
+    - 0x801CD458
+    # Fresh authoritative PID47036 / base_1789710844_pid47036 reached this
+    # callback through func_8006A690 with architectural LR 0x8006A6DC.
+    # Same-PID MEM2 proves [0x926937A0+0x28]=0x8037B128 and same-PID MEM1
+    # proves descriptor slot +0 = 0x801CD158. Ghidra HEADLESS/read-only proves
+    # a standalone boundary despite the provisional func_801CD068+0xF0 label:
+    # predecessor 0x801CD154 is a separate blr stub; target 0x801CD158 owns its
+    # aligned frame/body and epilogue through 0x801CD250 blr; next real function
+    # begins at 0x801CD254 with a fresh stwu/mflr frame.
+    - 0x801CD158
+    # Fresh PID31436 reached a static callback descriptor at 0x8037BA78 and
+    # dispatched slot +4 through 0x8006B034 (architectural LR 0x8006B038) to
+    # 0x80203398. Ghidra HEADLESS proves a standalone function: predecessor
+    # returns at 0x80203394; this entry owns a fresh 0x80-byte frame, restores
+    # and returns at 0x8020367C; the next independent function starts 0x80203680.
+    - 0x80203398
+    # Fresh PID6220 selected descriptor entry 0x80372D08 -> handler block
+    # 0x8037B110 and dispatched slot +4 through 0x8006B034 (LR 0x8006B038)
+    # to 0x801CD328. Ghidra HEADLESS proves a standalone function: predecessor
+    # returns at 0x801CD324; this entry owns a fresh 0x20-byte frame and returns
+    # at 0x801CD41C; the next independent function starts at 0x801CD420.
+    - 0x801CD328
+    # Fresh PID33724 crossed 0x801CD328, which constructs nested descriptor
+    # 0x8037B128 and dispatches slot +4 through 0x8006AEC4 (LR 0x8006AEC8)
+    # to 0x801CD068. Ghidra HEADLESS proves a standalone function: predecessor
+    # returns at 0x801CD064; this entry owns a fresh 0x20-byte frame and returns
+    # at 0x801CD150; the next independent boundary is 0x801CD154.
+    - 0x801CD068
+    # Fresh PID34164 crossed 0x801CD068 and reached descriptor 0x80372D68,
+    # whose slot +4 is dispatched through 0x8006B034 (LR 0x8006B038) to
+    # 0x800655D4. Ghidra HEADLESS proves a standalone function: predecessor
+    # returns at 0x800655D0; this entry owns a fresh 0x20-byte frame and returns
+    # at 0x800656E8; the next independent function starts at 0x800656EC.
+    - 0x800655D4
+    # Fresh PID35556 crossed the 0x800655D4 path and dispatched descriptor
+    # 0x80372E50 slot +4 through 0x8006AEC4 (LR 0x8006AEC8) to 0x800664A4.
+    # Ghidra HEADLESS proves a standalone function: predecessor returns at
+    # 0x800664A0; this entry owns a fresh 0x10-byte frame and returns at
+    # 0x80066548; the next independent function starts at 0x8006654C.
+    - 0x800664A4
+    # Fresh authoritative PID5780 / base_1789711702_pid5780 reached descriptor
+    # 0x80372E50 slot +0 through func_8006A690 (architectural LR 0x8006A6DC).
+    # Same-PID chain: parent 0x9257CB20 -> [+0x24] child input 0x926B0860 ->
+    # [+4] live object 0x926B0880 -> [+0x28] descriptor 0x80372E50 ->
+    # [+0] 0x8006658C. Ghidra HEADLESS/read-only proves standalone leaf code:
+    # predecessor 0x8006654C..0x80066588 returns at 0x80066588; target owns
+    # 0x8006658C..0x800665BC and returns there; next boundary is 0x800665C0.
+    - 0x8006658C
+    # Fresh PID26004 crossed 0x800664A4 and reached descriptor 0x80372D80,
+    # whose slot +4 is dispatched through 0x8006B034 (LR 0x8006B038) to
+    # 0x80065750. Ghidra HEADLESS proves a standalone function: the prior
+    # framed routine returns at 0x80065748, 0x8006574C is a separate leaf BLR,
+    # this entry owns a fresh 0x30-byte frame and returns at 0x8006587C; the
+    # next independent function starts at 0x80065880.
+    - 0x80065750
+    # Fresh authoritative PID33156 / base_1789712076_pid33156 reached descriptor
+    # 0x80372D80 slot +0 through func_8006A690. Same-PID chain: parent
+    # 0x9257CB20 -> [+0x24] child input 0x926B0860 -> [+4] object 0x926B0880 ->
+    # [+0x30] live object 0x926B08C0 -> [+0x28] descriptor 0x80372D80 ->
+    # [+0] 0x80065898; bctrl at 0x8006A6D8 produces LR 0x8006A6DC.
+    # Ghidra HEADLESS/read-only proves standalone framed code: predecessor
+    # 0x80065880..0x80065894 tail-branches away with no fallthrough; target owns
+    # 0x80065898..0x80065924 and returns there; next boundary is 0x80065928.
+    - 0x80065898
+    # Fresh authoritative PID1332 / base_1789711203_pid1332 reached descriptor
+    # callback slot +0 through func_8006A690 (architectural LR 0x8006A6DC).
+    # Same-PID MEM2 proves [0x9257CB20+0x28]=0x80372D68; same-PID MEM1 proves
+    # descriptor 0x80372D68 slot +0 = 0x8006574C (+4=0x800655D4,
+    # +8=0x800656EC). Ghidra HEADLESS/read-only proves a standalone empty
+    # callback: prior framed routine returns at 0x80065748, target is exactly
+    # 0x8006574C blr, and the next independent framed function starts 0x80065750.
+    - 0x8006574C
+    # Fresh PID35156 crossed 0x80065750, then func_80065F80 selected the
+    # 12-byte record at 0x80372DA4 -> descriptor 0x80377508. Descriptor slot
+    # +4 is 0x80132920 and 0x8006AE2C dispatches it through 0x8006AEC4
+    # (architectural LR 0x8006AEC8). Ghidra HEADLESS proves a standalone
+    # callback: prior framed routine returns at 0x80132918, 0x8013291C is a
+    # separate BLR stub, target owns its own frame/body and returns at
+    # 0x801329A0; next independent leaf begins at 0x801329A4.
+    - 0x80132920
+    # Fresh authoritative PID47364 / base_1789712524_pid47364 reached descriptor
+    # 0x80377508 slot +0 through func_8006A690. Same-PID chain: parent object
+    # 0x926B08C0 -> [+0x24] child input 0x926B11C0 -> [+4] live object
+    # 0x926B11E0 -> [+0x28] descriptor 0x80377508 -> [+0] 0x801329B0;
+    # bctrl at 0x8006A6D8 produces LR 0x8006A6DC. Ghidra HEADLESS/read-only
+    # proves standalone tail-thunk ownership: 0x80132920 returns at 0x801329A0,
+    # separate thunk 0x801329A4..0x801329AC branches away, target owns exactly
+    # 0x801329B0..0x801329B8 and tail-branches to 0x80132E30; next boundary is
+    # independent BLR stub 0x801329BC, then framed function 0x801329C0.
+    - 0x801329B0
+    # Fresh PID35324 crossed 0x80132920 and selected normalized record index 3
+    # at 0x80372DBC -> descriptor 0x80377CD0. Descriptor slot +4 is
+    # 0x8014D8E4; 0x8006AEF0 loads [r4+4] and bctrls at 0x8006B034
+    # (architectural LR 0x8006B038). Ghidra HEADLESS proves a standalone
+    # callback: prior framed routine returns at 0x8014D8D8, separate thunks/
+    # stub occupy 0x8014D8DC/0x8014D8E0, target owns frame/body through
+    # 0x8014D9E8 blr, and the next framed function begins at 0x8014DA00.
+    - 0x8014D8E4
+    # Fresh authoritative PID27904 / base_1789712913_pid27904 reached descriptor
+    # 0x80377CD0 slot +0 through func_8006A690. Same-PID chain: parent
+    # 0x926B08C0 -> [+0x24] child input 0x926B11C0 -> [+4] object 0x926B11E0 ->
+    # [+0x30] 0x926B1220 -> [+0x30] 0x926B1260 -> [+0x30] live 0x926B12A0 ->
+    # [+0x28] descriptor 0x80377CD0 -> [+0] 0x8014D9F4; bctrl at 0x8006A6D8
+    # produces LR 0x8006A6DC. Ghidra HEADLESS/read-only proves standalone
+    # tail-thunk ownership: framed predecessor returns at 0x8014D9E8, separate
+    # thunk 0x8014D9EC..0x8014D9F0 branches away, target owns exactly
+    # 0x8014D9F4..0x8014D9F8 and tail-branches to 0x80132E30; next boundary is
+    # independent BLR stub 0x8014D9FC followed by framed 0x8014DA00.
+    - 0x8014D9F4
+    # Fresh PID14660 crossed 0x8014D8E4. func_80065F80 selector 9 normalizes
+    # to record index 10 at 0x80372E10 -> descriptor 0x8037BA28; descriptor
+    # slot +4 is 0x802020BC and 0x8006AEF0 dispatches it with architectural
+    # LR 0x8006B038. Ghidra HEADLESS proves a standalone callback: prior
+    # framed routine returns at 0x802020B4, 0x802020B8 is a separate BLR
+    # stub, target owns frame/body through 0x802021D4 BLR; next framed entry
+    # begins at 0x802021EC.
+    - 0x802020BC
+    # Fresh PID1464 crossed 0x802020BC and reached the later func_8005F1E0
+    # descriptor at 0x803783A8. Slot +4 is 0x80163788 and 0x8006AEF0
+    # dispatches it through 0x8006B034 (LR 0x8006B038). Ghidra HEADLESS
+    # proves a standalone callback: predecessor returns at 0x80163784,
+    # target owns a fresh 0x20-byte frame/body through 0x80163888 BLR, and
+    # the next independent framed function begins at 0x8016388C.
+    - 0x80163788
+    # Fresh PID38124 crossed 0x8014D9FC and hit the scheduler/object callback
+    # path in func_8006A80C. Live object 0x926B12E0 has descriptor 0x8037BA28
+    # at object+0x28; descriptor slot +0x10 is exactly 0x802021E8, dispatched
+    # with architectural LR 0x8006A85C. Ghidra HEADLESS proves a standalone
+    # BLR callback: framed predecessor 0x802020BC returns at 0x802021D4;
+    # 0x802021D8 and 0x802021E0 are separate terminal tail-thunks; target is
+    # exactly 0x802021E8 BLR; next framed function starts at 0x802021EC.
+    - 0x802021E8
+    # Fresh authoritative PID1276 / base_1789713491_pid1276 reached descriptor
+    # 0x8037BA28 slot +0 through func_8006A690 (architectural LR 0x8006A6DC).
+    # Same-PID MEM2 chain: 0x926B08C0 -> [+0x24] 0x926B11C0 -> [+4]
+    # 0x926B11E0 -> linked-list [+0x30] through 0x926B1220, 0x926B1260,
+    # 0x926B12A0 to live object 0x926B12E0 -> [+0x28] descriptor 0x8037BA28.
+    # Same-PID MEM1 proves descriptor +0=0x802021E0, +4=0x802020BC,
+    # +8=0x802021D8. Ghidra HEADLESS/read-only proves standalone tail-thunk:
+    # 0x802020BC returns at 0x802021D4; 0x802021D8..DC is a separate thunk;
+    # target owns 0x802021E0..E4 and tail-branches to 0x80132E30; next boundary
+    # is independent rooted BLR 0x802021E8, then framed 0x802021EC.
+    - 0x802021E0
+    # Fresh PID10452 crossed 0x80163788 and its internal descriptor loop uses
+    # 0x803783C0 = {0x80163ADC, 0x801638F0, 0x80163A80, 0, 0, 0}.
+    # 0x8006AE2C dispatches slot +4 with architectural LR 0x8006AEC8.
+    # Ghidra HEADLESS proves 0x801638F0 is standalone: 0x801638EC is a
+    # separate BLR stub; target owns a fresh 0x40-byte frame/body and returns
+    # at 0x80163A7C; the next independent entry starts at 0x80163A80.
+    - 0x801638F0
+    # Fresh authoritative PID45168 / base_1789714200_pid45168 reached descriptor
+    # 0x803783C0 slot +0 through func_8006A690 (architectural LR 0x8006A6DC).
+    # Same-PID chain from global 0x8062A678 reaches recursive child input
+    # 0x926E3240 -> live object 0x926E3260; [live+0x28]=0x803783C0 and
+    # descriptor +0=0x80163ADC, +4=0x801638F0, +8=0x80163A80.
+    # Ghidra HEADLESS/read-only proves standalone ownership: predecessor
+    # 0x80163A80..0x80163AD8 terminates with tail branch to 0x80067180;
+    # target is exactly 0x80163ADC blr; next framed boundary is 0x80163AE0.
+    - 0x80163ADC
+    # Fresh authoritative PID42368 / base_1789713830_pid42368 reached descriptor
+    # 0x803783A8 slot +0 through func_8006A690 (architectural LR 0x8006A6DC).
+    # Same-PID chain from global 0x8062A678 reaches live object 0x9257CB60;
+    # [0x9257CB60+0x28]=0x803783A8 and descriptor +0=0x801638EC,
+    # +4=0x80163788, +8=0x8016388C. Ghidra HEADLESS/read-only proves target
+    # is the independent one-instruction BLR callback: predecessor returns at
+    # 0x801638E8 and next framed boundary is historical root 0x801638F0.
+    - 0x801638EC
+    # Fresh PID31408 crossed 0x801638F0. Its loop reaches r28=0x803783D8,
+    # whose word is descriptor 0x80378450 = {0x80164B98, 0x80164A90,
+    # 0x80164B44, 0, 0, 0}; 0x8006AE2C dispatches slot +4 with architectural
+    # LR 0x8006AEC8. Ghidra HEADLESS proves 0x80164A90 is standalone:
+    # predecessor returns at 0x80164A88, 0x80164A8C is a separate BLR stub,
+    # target owns a fresh 0x20-byte frame/body through 0x80164B40 BLR, and the
+    # next independent framed function begins at 0x80164B44.
+    - 0x80164A90
+    # Fresh authoritative PID47404 / base_1789714615_pid47404 reached descriptor
+    # 0x80378450 slot +0 through func_8006A690 (architectural LR 0x8006A6DC).
+    # Same-PID chain reaches live object 0x926E35E0; [live+0x28]=0x80378450
+    # and descriptor +0=0x80164B98, +4=0x80164A90, +8=0x80164B44.
+    # Ghidra HEADLESS/read-only proves standalone conditional leaf/tail-thunk
+    # ownership: predecessor returns at 0x80164B94; target owns 0x80164B98..
+    # 0x80164BAC, with beqlr or terminal tail branch to 0x80132E30; next
+    # distinct boundary is 0x80164BB0 blr, followed by framed 0x80164BB4.
+    - 0x80164B98
+    # Fresh PID25728 crossed 0x80164A90 and advanced the same descriptor loop to
+    # r28=0x803783DC -> descriptor 0x80378480 = {0x801656AC, 0x80165580,
+    # 0x80165658, 0, 0, 0}. The retail dispatcher reaches slot +4 with LR
+    # 0x8006B038. Ghidra HEADLESS proves 0x80165580 standalone: previous
+    # framed function returns at 0x8016557C; target owns a fresh 0x20-byte
+    # frame/body through 0x80165654 BLR; next framed function begins 0x80165658.
+    - 0x80165580
+    # Fresh authoritative PID44872 / base_1789715294_pid44872 reached descriptor
+    # 0x80378480 slot +0 through func_8006A690 (architectural LR 0x8006A6DC).
+    # Same-PID live object 0x926E3620 has [+0x28]=0x80378480; descriptor is
+    # {+0=0x801656AC,+4=0x80165580,+8=0x80165658,+C=0}.
+    # Ghidra HEADLESS/read-only proves standalone conditional leaf/tail-thunk:
+    # predecessor returns at 0x801656A8; target owns 0x801656AC..0x801656C0
+    # with beqlr or terminal tail branch to 0x80132E30; next distinct boundary
+    # is 0x801656C4 blr, followed by dynamic-frame routine at 0x801656C8.
+    - 0x801656AC
+    # Fresh PID17212 crossed 0x80165580 and advanced the descriptor loop to
+    # r28=0x803783E4 -> descriptor 0x803784B0 = {0x80165BF8, 0x80165AF0,
+    # 0x80165BA4, 0, 0, 0}. Retail slot +4 dispatch reaches LR 0x8006B038.
+    # Ghidra HEADLESS proves standalone ownership: 0x80165AEC is a separate BLR
+    # stub; target owns a fresh 0x20-byte frame/body through 0x80165BA0 BLR;
+    # next independent framed function begins at 0x80165BA4.
+    - 0x80165AF0
+    # Fresh authoritative PID9284 / base_1789715610_pid9284 reached descriptor
+    # 0x803784B0 slot +0 through func_8006A690 (architectural LR 0x8006A6DC).
+    # Same-PID live object 0x926E36A0 has [+0x28]=0x803784B0; descriptor is
+    # {+0=0x80165BF8,+4=0x80165AF0,+8=0x80165BA4,+C=0}.
+    # Ghidra HEADLESS/read-only proves standalone conditional leaf/tail-thunk:
+    # predecessor returns at 0x80165BF4; target owns 0x80165BF8..0x80165C0C,
+    # with beqlr or terminal tail branch to 0x80132E30; next boundary is
+    # 0x80165C10 blr, followed by a dynamic-frame routine at 0x80165C14.
+    - 0x80165BF8
+    # Fresh PID34440 crossed 0x80165AF0 and advanced the same descriptor loop to
+    # r28=0x803783E8 -> descriptor 0x80379308 = {0x801AEA88, 0x801AE988,
+    # 0x801AEA48, 0, 0, 0}. Retail slot +4 dispatch reaches LR 0x8006B038.
+    # Ghidra HEADLESS proves standalone ownership: prior framed routine returns
+    # at 0x801AE978, 0x801AE97C/980/984 are separate tail/stub entries, target
+    # owns a fresh 0x20-byte frame/body through 0x801AEA44 BLR, and the next
+    # independent framed function begins at 0x801AEA48.
+    - 0x801AE988
+    # Fresh authoritative PID47356 / base_1789715943_pid47356 reached descriptor
+    # 0x80379308 slot +0 through func_8006A690 (architectural LR 0x8006A6DC).
+    # Same-PID live object 0x926E36E0 has [+0x28]=0x80379308; descriptor is
+    # {+0=0x801AEA88,+4=0x801AE988,+8=0x801AEA48,+C=0}.
+    # Ghidra HEADLESS/read-only proves standalone leaf ownership: predecessor
+    # framed routine ends 0x801AEA84 BLR; target owns 0x801AEA88..0x801AEA98,
+    # clears inner-object field +0x214 and returns; next framed boundary is
+    # 0x801AEA9C.
+    - 0x801AEA88
+    # Fresh PID18920 crossed 0x801AE988 and advanced the descriptor loop to
+    # r28=0x803783EC -> descriptor 0x8037B080 = {0x801C7E0C, 0x801C7D04,
+    # 0x801C7DB8, 0, 0, 0}. Retail slot +4 dispatch reaches LR 0x8006B038.
+    # Ghidra HEADLESS proves standalone ownership: 0x801C7D00 is a separate BLR
+    # stub; target owns a fresh 0x20-byte frame/body through 0x801C7DB4 BLR;
+    # next independent framed function begins at 0x801C7DB8.
+    - 0x801C7D04
+    # Fresh authoritative PID27756 / base_1789716208_pid27756 reached descriptor
+    # 0x8037B080 slot +0 through func_8006A690 (architectural LR 0x8006A6DC).
+    # Same-PID live object 0x926E3720 has [+0x28]=0x8037B080; descriptor is
+    # {+0=0x801C7E0C,+4=0x801C7D04,+8=0x801C7DB8,+C=0}.
+    # Ghidra HEADLESS/read-only proves standalone conditional leaf/tail-thunk:
+    # predecessor returns at 0x801C7E08; target owns 0x801C7E0C..0x801C7E20,
+    # with beqlr or terminal tail branch to 0x80132E30; next boundary is
+    # 0x801C7E24 blr, followed by dynamic-frame routine at 0x801C7E28.
+    - 0x801C7E0C
+    # Fresh PID33976 crossed 0x801C7D04 and later func_8005F1E0 selected
+    # descriptor 0x80378638 = {0x80178628, 0x80178540, 0x801785E8, 0,
+    # 0x8017862C, 0}. Retail slot +4 dispatch reaches LR 0x8006B038.
+    # Ghidra HEADLESS proves standalone ownership: predecessor returns at
+    # 0x8017853C; target owns a fresh 0x10-byte frame/body through 0x801785E4
+    # BLR; next independent framed function begins at 0x801785E8.
+    - 0x80178540
+    # Fresh PID37988 crossed 0x802021E8 and later hit the scheduler/object
+    # callback path in func_8006A80C. Live object 0x9257CBA0 has descriptor
+    # 0x80378638 at object+0x28; descriptor slot +0x10 is exactly 0x8017862C,
+    # dispatched with architectural LR 0x8006A85C. Ghidra HEADLESS proves a
+    # standalone BLR callback: framed predecessor 0x801785E8..0x80178624
+    # returns cleanly, 0x80178628 is a separate BLR stub, target 0x8017862C
+    # is exactly BLR, and the next framed function starts at 0x80178630.
+    - 0x8017862C
+    # Fresh PID26000 crossed 0x80178540. The first iteration of its 31-entry
+    # table loop retained saved r31=0x80378650; static table word +0 points to
+    # descriptor 0x803787A8 = {0x8017F2A8, 0x8017F164, 0x8017F278, 0, 0, 0}.
+    # The loop dispatches descriptor slot +4 through 0x8006AE2C, producing LR
+    # 0x8006AEC8 exactly. Ghidra HEADLESS proves 0x8017F164 standalone: the
+    # previous framed routine returns at 0x8017F160; target opens a fresh
+    # 0x20-byte frame and returns at 0x8017F274; next framed entry is 0x8017F278.
+    - 0x8017F164
+    # Fresh PID32708 crossed 0x8017F164 and advanced func_80178540 to the
+    # second table record: saved r31=0x80378658 -> descriptor 0x803782F8 =
+    # {0x80160CEC, 0x80160A90, 0x80160C8C, 0, 0x80160DD8, 0}. Retail slot
+    # +4 dispatch reaches architectural LR 0x8006B038. Ghidra HEADLESS proves
+    # 0x80160A90 standalone: prior framed routine returns at 0x80160A8C; target
+    # owns a fresh 0x20-byte frame/body through 0x80160C88 BLR; next framed
+    # function begins at 0x80160C8C.
+    - 0x80160A90
+    # Fresh PID29676 crossed 0x8017862C and hit the scheduler/object callback
+    # path in func_8006A80C. Live object 0x9257EE40 has descriptor 0x803782F8
+    # at object+0x28; descriptor slot +0x10 is exactly 0x80160DD8, dispatched
+    # with architectural LR 0x8006A85C. Ghidra HEADLESS proves a standalone
+    # BLR callback: rooted predecessor 0x80160A90 returns at 0x80160DD4,
+    # target 0x80160DD8 is exactly BLR, and next framed function starts
+    # at 0x80160DDC.
+    - 0x80160DD8
+    # Fresh PID34188 crossed 0x80160A90 and advanced func_80178540 to the
+    # third table record: saved r31=0x80378660 -> descriptor 0x803792D8 =
+    # {0x801AE5B8, 0x801AE3F4, 0x801AE568, 0, 0x801AE5D0, 0}. Retail slot
+    # +4 dispatch reaches architectural LR 0x8006B038. Ghidra HEADLESS proves
+    # 0x801AE3F4 standalone: prior large framed routine returns at 0x801AE3F0;
+    # target owns a fresh 0x20-byte frame/body through 0x801AE564 BLR; next
+    # independent framed function begins at 0x801AE568.
+    - 0x801AE3F4
+    # Fresh PID35344 crossed 0x80160DD8 and hit the scheduler/object callback
+    # path in func_8006A80C. Live object 0x9257EE80 has descriptor 0x803792D8
+    # at object+0x28; descriptor slot +0x10 is exactly 0x801AE5D0, dispatched
+    # with architectural LR 0x8006A85C. Ghidra HEADLESS proves standalone
+    # ownership: prior cleanup returns at 0x801AE5B4; 0x801AE5B8..0x801AE5CC
+    # is a separate leaf; target 0x801AE5D0 is exactly BLR; next framed
+    # function begins at 0x801AE5D4.
+    - 0x801AE5D0
+    # Fresh PID31140 / base_1789639888_pid31140 crossed 0x801AE3F4 and later
+    # hit descriptor callback slot +4 = 0x800662D8 through func_8006AE2C.
+    # Runtime has r4=0x926A24C0 and r12/CTR=0x800662D8; HEADLESS proves the
+    # caller instruction at 0x8006AEAC is `lwz r12,4(r4)`, followed by bctrl
+    # at 0x8006AEC4 (architectural LR 0x8006AEC8). HEADLESS also proves a
+    # clean standalone tail thunk: predecessor returns at 0x800662D4; target
+    # is `li r4,2; li r5,8; b 0x8006AA2C`. Neighbors remain unpromoted.
+    - 0x800662D8
+    # Fresh PID24656 / base_1789640581_pid24656 crossed 0x800662D8 and the
+    # five-slot state pass selected slot4: state 0x926A2600 has +0x24 ->
+    # 0x926A28D0 with signed selector +0x0D = 4, normalized to table index 5.
+    # 0x80372D98 + 5*0x0C = 0x80372DD4 -> descriptor 0x8037A678, whose +4
+    # callback is exactly 0x801BFC64. Retail dispatch reaches LR 0x8006B038.
+    # Ghidra HEADLESS proves standalone ownership: predecessor returns at
+    # 0x801BFC60; target opens its own 0x20-byte frame at 0x801BFC64 and
+    # returns at 0x801BFCE4. Following thunks/entries remain unpromoted.
+    - 0x801BFC64
+    # Fresh PID36236 / base_1789641256_pid36236 crossed 0x801BFC64 and later
+    # advanced func_80178540 to its fourth 8-byte table record. Runtime r30=3
+    # and saved table pointer 0x80378668 resolve to descriptor 0x803792A8 =
+    # {0x801AB014, 0x801AAE18, 0x801AAFC4, 0, 0, 0}. Retail slot +4 dispatch
+    # reaches architectural LR 0x8006B038. Ghidra HEADLESS proves standalone
+    # ownership: previous function returns at 0x801AAE14; target opens its own
+    # 0x20-byte frame at 0x801AAE18 and returns at 0x801AAFC0; next framed
+    # function begins at 0x801AAFC4.
+    - 0x801AAE18
+    # Fresh PID25300 / base_1789641848_pid25300 advanced func_80178540 to its
+    # fifth 8-byte table record. Runtime r30=4 and saved table pointer
+    # 0x80378670 resolve to descriptor 0x803782E0, whose slot +4 is exactly
+    # 0x8015BC7C; retail dispatch reaches architectural LR 0x8006B038.
+    # Ghidra HEADLESS proves standalone ownership: the predecessor fully
+    # restores state and returns at 0x8015BC78; target opens its own 0x10-byte
+    # frame at 0x8015BC7C and returns at 0x8015BCD4; next function begins at
+    # 0x8015BCD8. Other descriptor slots remain unpromoted.
+    - 0x8015BC7C
+    # Fresh PID24016 / base_1789642237_pid24016 reached the sixth record of
+    # func_80178540's 8-byte callback table: r30=5 selects 0x80378678, whose
+    # same-PID crash MEM1 value is descriptor 0x803789A0; descriptor slot +4
+    # is exactly 0x8018C794 and retail bctrl returns to LR 0x8006B038.
+    # Ghidra HEADLESS proves standalone ownership: predecessor returns at
+    # 0x8018C790, target opens its own frame at 0x8018C794 and returns at
+    # 0x8018C894, and the next framed function begins at 0x8018C898.
+    # Other descriptor slots remain unpromoted without their own runtime hit.
+    - 0x8018C794
+    # Fresh PID5884 / base_1789642733_pid5884 advanced the same callback walk
+    # to r30=6: record 0x80378680 resolves in same-PID crash MEM1 to descriptor
+    # 0x8037B050 (flag 1), whose slot +4 at 0x8037B054 is exactly 0x801C6198;
+    # retail dispatch again reaches architectural LR 0x8006B038.
+    # Ghidra HEADLESS proves standalone ownership despite the provisional
+    # func_801C5EC8+0x2D0 symbol: predecessor fully returns at 0x801C6194;
+    # target opens its own 0x20-byte frame at 0x801C6198, restores/returns at
+    # 0x801C64F8, and the next framed function begins at 0x801C64FC.
+    - 0x801C6198
+    # Fresh PID19512 / base_1789643845_pid19512 crossed 0x801C6198, then
+    # func_801C6104 passed descriptor 0x8037B068 to 0x8006AE2C. Same-PID
+    # crash MEM1 has descriptor slot +4 = 0x801C6544, matching CTR/r12 and
+    # architectural LR 0x8006AEC8. Ghidra HEADLESS proves this is standalone:
+    # 0x801C6540 is a separate BLR stub; 0x801C6544 opens its own 0x20-byte
+    # frame and returns at 0x801C6608; the next framed function starts 0x801C6614.
+    - 0x801C6544
+    # Fresh PID39556 crossed 0x801AE5D0 and hit the scheduler/object callback
+    # path in func_8006A80C. Live object 0x925A14C0 has descriptor 0x8037B068
+    # at object+0x28; descriptor slot +0x10 is exactly 0x801C6610, dispatched
+    # with architectural LR 0x8006A85C. Ghidra HEADLESS proves standalone
+    # ownership: rooted predecessor 0x801C6544 returns at 0x801C6608;
+    # 0x801C660C is a separate BLR stub; target 0x801C6610 is exactly BLR;
+    # next independent aligned-frame function starts at 0x801C6614.
+    - 0x801C6610
+    # Fresh PID36924 / base_1789644247_pid36924 advanced the callback-table
+    # walk to r30=7: record 0x80378688 -> descriptor 0x8037B980 (flag 1), whose
+    # slot +4 is exactly 0x801FA8D0; retail indirect call returns to 0x8006B038.
+    # Ghidra HEADLESS proves standalone ownership despite the provisional
+    # func_801FA8A8+0x28 label: 0x801FA8A8 is a separate leaf ending 0x801FA8CC,
+    # target 0x801FA8D0 opens its own frame and returns at 0x801FA974, with the
+    # next framed function beginning at 0x801FA978.
+    - 0x801FA8D0
+    # Fresh PID5616 / base_1789645337_pid5616 advanced the same callback-table
+    # walk to r30=8: record 0x80378690 -> descriptor 0x80379428 (flag 1), whose
+    # slot +4 is exactly 0x801B9DE4; retail indirect call returns to 0x8006B038.
+    # Ghidra HEADLESS proves standalone ownership despite the provisional
+    # func_801B8018+0x1DCC label: predecessor returns at 0x801B9DE0, target
+    # opens its own frame at 0x801B9DE4 and returns at 0x801B9F4C. The next
+    # independent leaf starts at 0x801B9F50; 0x801B9F70 is a separate BLR stub
+    # and the next framed function begins at 0x801B9F74.
+    - 0x801B9DE4
+    # Fresh PID26596 crossed 0x801C6610 and hit the scheduler/object callback
+    # path in func_8006A80C. Live object 0x9257F000 has descriptor 0x80379428
+    # at object+0x28; descriptor slot +0x10 is exactly 0x801B9F70, dispatched
+    # with architectural LR 0x8006A85C. Ghidra HEADLESS revalidates standalone
+    # ownership: rooted predecessor 0x801B9DE4 returns at 0x801B9F4C;
+    # 0x801B9F50..0x801B9F6C is a separate leaf; target 0x801B9F70 is exactly
+    # BLR; next framed function starts at 0x801B9F74.
+    - 0x801B9F70
+    # Fresh PID37264 / base_1789645710_pid37264 advanced the callback-table
+    # walk to r30=9: record 0x80378698 -> descriptor 0x8037B950 (flag 1), whose
+    # slot +4 is exactly 0x801F641C; retail indirect call returns to 0x8006B038.
+    # Ghidra HEADLESS proves standalone ownership despite the provisional
+    # func_801F5DF0+0x62C label: predecessor returns at 0x801F6418; target opens
+    # its own 0x60-byte frame at 0x801F641C and returns at 0x801F6618. The next
+    # independent leaf begins at 0x801F661C; 0x801F6654 is a separate BLR stub,
+    # and the next framed function begins at 0x801F6658.
+    - 0x801F641C
+    # Fresh PID4824 crossed 0x801B9F70 and hit the scheduler/object callback
+    # path in func_8006A80C. Live object 0x9257F040 has descriptor 0x8037B950
+    # at object+0x28; descriptor slot +0x10 is exactly 0x801F6654, dispatched
+    # with architectural LR 0x8006A85C. Ghidra HEADLESS revalidates standalone
+    # ownership: rooted predecessor 0x801F641C returns at 0x801F6618;
+    # 0x801F661C..0x801F6650 is a separate leaf; target 0x801F6654 is exactly
+    # BLR; next framed function starts at 0x801F6658.
+    - 0x801F6654
+    # Fresh PID36672 / base_1789646092_pid36672 advanced the callback-table
+    # walk to r30=10: record 0x803786A0 -> descriptor 0x8037B738 (flag 1), whose
+    # slot +4 is exactly 0x801EFE1C; retail indirect call returns to 0x8006B038.
+    # Ghidra HEADLESS proves standalone ownership despite the provisional
+    # func_801EFDD4+0x48 label: predecessor returns at 0x801EFE18; target opens
+    # its own 0x40-byte frame at 0x801EFE1C and returns at 0x801EFF70. The next
+    # independent leaf starts at 0x801EFF74; 0x801EFF88 is a separate BLR stub,
+    # and the next framed function begins at 0x801EFF8C.
+    - 0x801EFE1C
+    # Fresh PID44268 crossed 0x801F6654 and hit the scheduler/object callback
+    # path in func_8006A80C. Live object 0x9257F080 has descriptor 0x8037B738
+    # at object+0x28; descriptor slot +0x10 is exactly 0x801EFF88, dispatched
+    # with architectural LR 0x8006A85C. Ghidra HEADLESS revalidates standalone
+    # ownership: rooted predecessor 0x801EFE1C returns at 0x801EFF70;
+    # 0x801EFF74..0x801EFF84 is a separate leaf; target 0x801EFF88 is exactly
+    # BLR; next framed function starts at 0x801EFF8C.
+    - 0x801EFF88
+    # Fresh PID20108 / base_1789646476_pid20108 advanced the callback-table
+    # walk to r30=11: record 0x803786A8 -> descriptor 0x80378870 (flag 1), whose
+    # slot +4 is exactly 0x80183688; retail indirect call returns to 0x8006B038.
+    # Ghidra HEADLESS proves standalone ownership despite the provisional
+    # func_801820A0+0x15E8 label: predecessor restores state and returns at
+    # 0x80183684; target opens its own 0x10-byte frame at 0x80183688 and returns
+    # at 0x801836BC. The next framed function begins at 0x801836C0; 0x801836F0
+    # and 0x801836F4 are separate BLR stubs.
+    - 0x80183688
+    # Fresh PID33496 crossed 0x801EFF88 and hit the scheduler/object callback
+    # path in func_8006A80C. Live object 0x9257F0C0 has descriptor 0x80378870
+    # at object+0x28; descriptor slot +0x10 is exactly 0x801836F4, dispatched
+    # with architectural LR 0x8006A85C. Ghidra HEADLESS revalidates standalone
+    # ownership: 0x801836C0..0x801836EC returns cleanly; 0x801836F0 is a
+    # separate BLR stub; target 0x801836F4 is exactly BLR; next leaf begins
+    # at 0x801836F8.
+    - 0x801836F4
+    # Fresh PID19192 / base_1789646994_pid19192 advanced the callback-table
+    # walk to r30=12: record 0x803786B0 -> descriptor 0x803788E0 (flag 1), whose
+    # slot +4 is exactly 0x80184D78; retail indirect call returns to 0x8006B038.
+    # Ghidra HEADLESS proves standalone ownership despite the provisional
+    # func_8018386C+0x150C label: the prior framed routine returns at 0x80184D50,
+    # 0x80184D58..0x80184D74 is a separate leaf, target opens its own 0x40-byte
+    # frame at 0x80184D78 and returns at 0x80184E60; next framed function starts
+    # at 0x80184E64.
+    - 0x80184D78
+    # Fresh PID30392 / base_1789647305_pid30392 advanced the callback-table
+    # walk to r30=13: record 0x803786B8 -> descriptor 0x80378570 (flag 1), whose
+    # slot +4 is exactly 0x8016F990; retail indirect call returns to 0x8006B038.
+    # Ghidra HEADLESS proves standalone ownership despite the provisional
+    # func_80169AEC+0x5EA4 label: predecessor returns at 0x8016F988,
+    # 0x8016F98C is a separate BLR stub, target opens its own 0x50-byte frame at
+    # 0x8016F990 and returns at 0x8016FAF4; next framed function starts 0x8016FAF8.
+    - 0x8016F990
+    # Fresh PID42652 crossed 0x801836F4 and hit the scheduler/object callback
+    # path in func_8006A80C. Live object 0x9257F140 has descriptor 0x80378570
+    # at object+0x28; descriptor slot +0x10 is exactly 0x8016FC04, dispatched
+    # with architectural LR 0x8006A85C. Ghidra HEADLESS proves standalone
+    # ownership: rooted predecessor 0x8016F990 returns at 0x8016FC00;
+    # target 0x8016FC04 is exactly BLR; next independent framed function
+    # begins at 0x8016FC08.
+    - 0x8016FC04
+    # Fresh PID32068 / base_1789647660_pid32068 advanced the callback-table
+    # walk to r30=14: record 0x803786C0 -> descriptor 0x8037B708 (flag 1), whose
+    # slot +4 is exactly 0x801EFC88; retail indirect call returns to 0x8006B038.
+    # Ghidra HEADLESS proves standalone ownership despite the provisional
+    # func_801EF794+0x4F4 label: predecessor returns at 0x801EFC80,
+    # 0x801EFC84 is a separate BLR stub, target opens its own 0x10-byte frame at
+    # 0x801EFC88 and returns at 0x801EFCF8; next framed function starts 0x801EFCFC.
+    - 0x801EFC88
+    # Fresh PID36668 / base_1789647956_pid36668 advanced the callback-table
+    # walk to r30=15: record 0x803786C8 -> descriptor 0x80378378 (flag 1), whose
+    # slot +4 is exactly 0x80163170; retail indirect call returns to 0x8006B038.
+    # Ghidra HEADLESS proves standalone ownership despite the provisional
+    # func_80160FEC+0x2184 label: predecessor returns at 0x80163168,
+    # 0x8016316C is a separate BLR stub, target opens its own 0x10-byte frame at
+    # 0x80163170 and returns at 0x801631C4; next framed function starts 0x801631C8.
+    - 0x80163170
+    # Fresh PID39008 crossed 0x8016FC04 and hit the scheduler/object callback
+    # path in func_8006A80C. Live object 0x9257F1C0 has descriptor 0x80378378
+    # at object+0x28; descriptor slot +0x10 is exactly 0x801631FC, dispatched
+    # with architectural LR 0x8006A85C. Ghidra HEADLESS revalidates standalone
+    # ownership: 0x801631C8..0x801631F4 returns cleanly; 0x801631F8 is a
+    # separate BLR stub; target 0x801631FC is exactly BLR; next framed function
+    # starts at 0x80163200.
+    - 0x801631FC
+    # Fresh PID37300 / base_1789648258_pid37300 advanced the callback-table
+    # walk to r30=16: record 0x803786D0 -> descriptor 0x8037B9B0 (flag 1), whose
+    # slot +4 is exactly 0x801FB1E4; retail indirect call returns to 0x8006B038.
+    # Ghidra HEADLESS proves standalone ownership despite the provisional
+    # func_801FA8D0+0x914 label: predecessor returns at 0x801FB1DC,
+    # 0x801FB1E0 is a separate BLR stub, target opens its own 0x10-byte frame at
+    # 0x801FB1E4 and returns at 0x801FB254; next framed function starts 0x801FB258.
+    - 0x801FB1E4
+    # Fresh PID38828 crossed 0x801631FC and hit the scheduler/object callback
+    # path in func_8006A80C. Live object 0x9257F200 has descriptor 0x8037B9B0
+    # at object+0x28; descriptor slot +0x10 is exactly 0x801FB298, dispatched
+    # with architectural LR 0x8006A85C. Ghidra HEADLESS proves standalone
+    # ownership: 0x801FB258..0x801FB28C returns cleanly; 0x801FB290..294 is a
+    # separate terminal tail-thunk; target 0x801FB298 is exactly BLR; next
+    # independent framed function starts at 0x801FB29C.
+    - 0x801FB298
+    # Fresh PID36348 / base_1789648788_pid36348 advanced the callback-table
+    # walk to r30=17: record 0x803786D8 -> descriptor 0x80378348 (flag 1), whose
+    # slot +4 is exactly 0x80161490; retail indirect call returns to 0x8006B038.
+    # Ghidra HEADLESS proves standalone ownership despite the provisional
+    # func_80160FEC+0x4A4 label: predecessor finally returns at 0x8016148C;
+    # target opens its own 0x20-byte frame at 0x80161490 and returns at
+    # 0x8016152C; the next framed function starts at 0x80161530.
+    - 0x80161490
+    # Fresh PID11776 / base_1789649314_pid11776 advanced the callback-table
+    # walk to r30=18: record 0x803786E0 -> descriptor 0x80378888 (flag 1), whose
+    # slot +4 is exactly 0x80183E74; retail indirect call returns to 0x8006B038.
+    # Ghidra HEADLESS proves standalone ownership despite the provisional
+    # func_8018386C+0x608 label: predecessor returns at 0x80183E70; target opens
+    # its own 0x10-byte frame at 0x80183E74 and returns at 0x80183E9C.
+    # 0x80183EA0/0x80183EA4 are separate BLR stubs; next framed function starts
+    # at 0x80183EA8.
+    - 0x80183E74
+    # Fresh PID2456 / base_1789649822_pid2456 advanced the callback-table walk
+    # to r30=19: record 0x803786E8 -> descriptor 0x80378940 (flag 1), whose
+    # slot +4 is exactly 0x80187580; retail indirect call returns to 0x8006B038.
+    # Ghidra HEADLESS proves standalone ownership despite the provisional
+    # func_80184FD0+0x25B0 label: predecessor returns at 0x8018757C; target opens
+    # its own 0x10-byte frame at 0x80187580 and returns at 0x80187608; next
+    # framed function starts at 0x8018760C.
+    - 0x80187580
+    # Fresh PID23880 crossed 0x801FB298 and hit the scheduler/object callback
+    # path in func_8006A80C. Live object 0x9257F2C0 has descriptor 0x80378940
+    # at object+0x28; descriptor slot +0x10 is exactly 0x80187650, dispatched
+    # with architectural LR 0x8006A85C. Ghidra HEADLESS proves standalone
+    # ownership: 0x8018760C..0x80187648 returns cleanly; 0x8018764C is a
+    # separate BLR stub; target 0x80187650 is exactly BLR; next framed function
+    # starts at 0x80187654.
+    - 0x80187650
+    # Fresh PID37608 / base_1789650289_pid37608 reached descriptor callback
+    # 0x8014E888. Same-PID MEM2 preserves descriptor 0x80377D00 at active
+    # allocated object 0x926BC980 +0x28; descriptor slot +4 is exactly
+    # 0x8014E888 and retail dispatcher returns to 0x8006B038.
+    # Ghidra HEADLESS proves standalone ownership: predecessor returns at
+    # 0x8014E880, 0x8014E884 is a separate BLR stub, target opens its own
+    # 0x20-byte frame at 0x8014E888 and returns at 0x8014E928. Neighbor
+    # thunks/stubs remain unpromoted without their own runtime hits.
+    - 0x8014E888
+    # Fresh PID26260 / base_1789651147_pid26260 advanced the callback-table walk
+    # to r30=20: record 0x803786F0 -> descriptor 0x80378540 (flag 1), whose
+    # slot +4 is exactly 0x8016EAD4; retail indirect call returns to 0x8006B038.
+    # Ghidra HEADLESS proves standalone ownership: predecessor returns at
+    # 0x8016EAD0; target opens its own 0x10-byte frame at 0x8016EAD4 and returns
+    # at 0x8016EB64; the next framed function starts at 0x8016EB68.
+    - 0x8016EAD4
+    # Fresh PID3516 crossed 0x80187650 and hit the scheduler/object callback
+    # path in func_8006A80C. Live object 0x9257F300 has descriptor 0x80378540
+    # at object+0x28; descriptor slot +0x10 is exactly 0x8016EBAC, dispatched
+    # with architectural LR 0x8006A85C. Ghidra HEADLESS proves standalone
+    # ownership: 0x8016EB68..0x8016EBA4 returns cleanly; 0x8016EBA8 is a
+    # separate BLR stub; target 0x8016EBAC is exactly BLR; next framed function
+    # starts at 0x8016EBB0.
+    - 0x8016EBAC
+    # Corrected fresh PID23768 / base_1789661504_pid23768 reached 0x8015838C
+    # from func_801580CC. That caller supplies descriptor 0x80378278 to
+    # 0x8006AE2C; same-PID MEM1 has descriptor +4 = 0x8015838C, and the crash
+    # records LR=0x8006AEC8 with CTR/r12=0x8015838C, matching 0x8006AE2C's
+    # direct slot-[r4+4] indirect path exactly.
+    # Ghidra HEADLESS proves standalone ownership: predecessor returns at
+    # 0x80158388; target opens its own 0x20-byte frame at 0x8015838C and returns
+    # at 0x8015843C; 0x80158440/44 are separate BLR stubs and next substantial
+    # framed function starts at 0x80158448.
+    - 0x8015838C
+    # Fresh PID18440 / base_1789662001_pid18440 reached 0x801CBB10 from the
+    # func_80065750 -> func_80065F80 allocation path. Same-PID MEM2 has state
+    # 0x926A2600 +0x24 -> 0x926A28D0 and signed selector +0x0D = 5, selecting
+    # index 6 / record 0x80372DE0. Same-PID MEM1 maps that record to descriptor
+    # 0x8037B0E0, whose slot +4 is exactly 0x801CBB10; func_8006AEF0 records
+    # LR=0x8006B038 at that indirect call, matching the crash CTR/r12/LR.
+    # Ghidra HEADLESS proves standalone ownership: predecessor returns at
+    # 0x801CBB08, 0x801CBB0C is a separate BLR stub, target owns a 0x20-byte
+    # frame from 0x801CBB10 through its return at 0x801CBBC8; next boundary is
+    # 0x801CBBCC and the next framed function starts at 0x801CBBD8.
+    - 0x801CBB10
+    # Fresh PID36236 / base_1789681758_pid36236 advanced the callback-table walk
+    # to r30=21: record 0x803786F8 -> descriptor 0x803784E0 (flag 1), whose
+    # slot +4 is exactly 0x80169020. The crash records LR=0x8006B038 and
+    # CTR/r12=0x80169020, matching func_8006AEF0's slot-[r4+4] indirect call.
+    # Ghidra HEADLESS proves standalone ownership: predecessor returns at
+    # 0x8016901C; target opens its own frame at 0x80169020 and returns through
+    # its own epilogue ending 0x801690A8; the next real function starts 0x801690AC.
+    - 0x80169020
+    # Fresh PID38692 crossed 0x8016EBAC and hit the scheduler/object callback
+    # path in func_8006A80C. Live object 0x9257F340 has descriptor 0x803784E0
+    # at object+0x28; descriptor slot +0x10 is exactly 0x801690F0, dispatched
+    # with architectural LR 0x8006A85C. Ghidra HEADLESS proves standalone
+    # ownership: 0x801690AC..0x801690E8 returns cleanly; 0x801690EC is a
+    # separate BLR stub; target 0x801690F0 is exactly BLR; next framed function
+    # starts at 0x801690F4.
+    - 0x801690F0
+    # Fresh PID32040 / base_1789682131_pid32040 advanced the same callback-table
+    # walk to r30=22: record 0x80378700 -> descriptor 0x80378748 (flag 1), whose
+    # slot +4 is exactly 0x80178630. Crash LR=0x8006B038 and CTR/r12=0x80178630
+    # match func_8006AEF0's slot-[r4+4] indirect call.
+    # Fresh authoritative PID46264 / base_1789716484_pid46264 later reached
+    # descriptor 0x80378638 slot +0 through func_8006A690 with architectural
+    # LR 0x8006A6DC. Same-PID runtime chain ends at live object 0x9257CBA0,
+    # [live+0x28]=0x80378638, whose +0 slot is exactly 0x80178628.
+    # Ghidra HEADLESS/read-only proves a standalone empty callback: predecessor
+    # framed routine ends at 0x80178624 blr; target is exactly 0x80178628 blr;
+    # next boundary is the separate historical 0x8017862C blr, followed by
+    # framed function 0x80178630.
+    - 0x80178628
+    # Ghidra HEADLESS proves standalone ownership: predecessor returns at
+    # 0x80178624; 0x80178628/2C are separate BLR stubs; target owns its frame
+    # from 0x80178630 through the return at 0x80178698. 0x8017869C is a stub,
+    # 0x801786A0 a separate leaf, and the next framed function is 0x801786B4.
+    - 0x80178630
+    # Fresh PID39544 crossed 0x801690F0 and hit the scheduler/object callback
+    # path in func_8006A80C. Live object 0x9257F380 has descriptor 0x80378748
+    # at object+0x28; descriptor slot +0x10 is exactly 0x801786A0, dispatched
+    # with architectural LR 0x8006A85C. Ghidra HEADLESS proves standalone
+    # ownership: predecessor 0x80178630..0x80178698 returns cleanly;
+    # 0x8017869C is a separate BLR stub; target 0x801786A0..0x801786B0 is an
+    # independent terminal tail-thunk to 0x8000443C; next framed function
+    # starts at 0x801786B4.
+    - 0x801786A0
+    # Fresh PID38556 / base_1789682562_pid38556 advanced the callback-table walk
+    # to r30=23: record 0x80378708 -> descriptor 0x80378608 (flag 1), whose
+    # slot +4 is exactly 0x80173E3C. Crash LR=0x8006B038 and CTR/r12=0x80173E3C
+    # match func_8006AEF0's slot-[r4+4] indirect call.
+    # Ghidra HEADLESS proves standalone ownership: predecessor returns at
+    # 0x80173E38; target owns its frame from 0x80173E3C through return 0x80173EB0;
+    # 0x80173EB4/0x80173EB8 are separate BLR stubs and next framed function is
+    # 0x80173EBC (another framed boundary at 0x80173EEC).
+    - 0x80173E3C
+    # Fresh PID46404 crossed 0x801786A0 and hit the scheduler/object callback
+    # path in func_8006A80C. Live object 0x9257F3C0 has descriptor 0x80378608
+    # at object+0x28; descriptor slot +0x10 is exactly 0x80173EB8, dispatched
+    # with architectural LR 0x8006A85C. Ghidra HEADLESS proves standalone
+    # ownership: predecessor 0x80173E3C..0x80173EB0 returns cleanly;
+    # 0x80173EB4 is a separate BLR stub; target 0x80173EB8 is exactly BLR;
+    # next framed cleanup starts at 0x80173EBC.
+    - 0x80173EB8
+    # Fresh PID988 / base_1789683003_pid988 advanced the same callback-table
+    # walk to r30=24: record 0x80378710 -> descriptor 0x803785D8 (flag 1), whose
+    # slot +4 is exactly 0x8016FD54. Crash LR=0x8006B038 and CTR/r12=0x8016FD54
+    # match func_8006AEF0's slot-[r4+4] indirect call exactly.
+    # Ghidra HEADLESS/read-only proves standalone ownership: predecessor returns
+    # at 0x8016FD50; target opens its own 0x10-byte frame at 0x8016FD54 and
+    # returns at 0x8016FDC8. 0x8016FDCC/0x8016FDD0 are separate BLR stubs;
+    # the next framed real function starts at 0x8016FDD4.
+    - 0x8016FD54
+    # Fresh PID36664 crossed 0x80173EB8 and hit the scheduler/object callback
+    # path in func_8006A80C. Live object 0x9257F400 has descriptor 0x803785D8
+    # at object+0x28; descriptor slot +0x10 is exactly 0x8016FDD0, dispatched
+    # with architectural LR 0x8006A85C. Ghidra HEADLESS proves standalone
+    # ownership: predecessor 0x8016FD54..0x8016FDC8 returns cleanly;
+    # 0x8016FDCC is a separate BLR stub; target 0x8016FDD0 is exactly BLR;
+    # next framed cleanup starts at 0x8016FDD4.
+    - 0x8016FDD0
+    # Fresh PID7912 / base_1789684028_pid7912 advanced the same table walk to
+    # r30=25: record 0x80378718 -> descriptor 0x80378778 (flag 1), whose slot
+    # +4 is exactly 0x8017E300. Crash LR=0x8006B038 and CTR/r12=0x8017E300
+    # match func_8006AEF0's descriptor+4 indirect call.
+    # Ghidra HEADLESS/read-only proves standalone ownership: predecessor ends
+    # at 0x8017E2FC blr; target opens its own frame at 0x8017E300 and returns
+    # at 0x8017E354; the next framed function begins at 0x8017E358.
+    - 0x8017E300
+    # Fresh PID46380 crossed the current graph and hit the scheduler/object
+    # callback path in func_8006A80C. Same-PID crash/MEM2 gives live object
+    # 0x9257F440 with descriptor 0x80378778 at object+0x28; same-PID MEM1 has
+    # descriptor slot +0x10 = 0x8017E38C, exactly matching CTR/r12 with
+    # architectural LR 0x8006A85C. Ghidra HEADLESS/read-only proves standalone
+    # ownership: predecessor 0x8017E358..0x8017E384 returns cleanly; 0x8017E388
+    # is a separate BLR stub; target 0x8017E38C is exactly BLR; next independent
+    # boundary starts at 0x8017E390 and returns at 0x8017E3DC.
+    - 0x8017E38C
+    # Fresh PID38480 / base_1789684322_pid38480 advanced the callback-table
+    # walk to r30=26: record 0x80378720 -> descriptor 0x80378970 (flag 1),
+    # whose slot +4 is exactly 0x80187AB8. Crash LR=0x8006B038 and CTR/r12
+    # match func_8006AEF0's descriptor+4 indirect call.
+    # Ghidra HEADLESS/read-only proves standalone ownership: predecessor returns
+    # at 0x80187AB4; target opens a fresh frame at 0x80187AB8 and returns at
+    # 0x80187B1C. 0x80187B20/24/28 are separate BLR stubs and the next framed
+    # function begins at 0x80187B2C.
+    - 0x80187AB8
+    # Fresh PID45500 / base_1789703583_pid45500 crossed the current graph and
+    # hit func_8006A80C's object callback path. Same-PID MEM2 proves object
+    # 0x9257F480 +0x28 -> descriptor 0x80378970; same-PID MEM1 proves exact
+    # slot +0x10 -> 0x80187B28, matching LR=0x8006A85C and CTR/r12.
+    # Ghidra HEADLESS/read-only proves standalone ownership: framed predecessor
+    # 0x80187AB8 returns at 0x80187B1C; 0x80187B20 and 0x80187B24 are separate
+    # BLR stubs; target 0x80187B28 is its own BLR stub; next framed cleanup
+    # begins at 0x80187B2C. Static table 0x80378970 publishes target at +0x10.
+    - 0x80187B28
+    # Fresh PID1468 / base_1789684607_pid1468 advanced the same callback-table
+    # walk to r30=27: record 0x80378728 -> descriptor 0x80378510 (flag 1),
+    # whose slot +4 is exactly 0x80169B74. Crash LR=0x8006B038 and CTR/r12
+    # match func_8006AEF0's descriptor+4 indirect call.
+    # Ghidra HEADLESS/read-only proves standalone ownership: predecessor returns
+    # at 0x80169B70; target opens a fresh frame at 0x80169B74 and returns at
+    # 0x80169BE0; next framed function begins at 0x80169BE4.
+    - 0x80169B74
+    # Fresh PID39592 / base_1789684811_pid39592 advanced the callback-table
+    # walk to r30=28: record 0x80378730 -> descriptor 0x8037B9E0 (flag 1),
+    # whose slot +4 is exactly 0x801FC0D4. Crash LR=0x8006B038 and CTR/r12
+    # match func_8006AEF0's descriptor+4 indirect call.
+    # Ghidra HEADLESS/read-only proves standalone ownership: predecessor returns
+    # at 0x801FC0D0; target opens a fresh frame at 0x801FC0D4 and returns at
+    # 0x801FC118; next framed function begins at 0x801FC11C.
+    - 0x801FC0D4
+    # Fresh PID28056 / base_1789685060_pid28056 advanced the callback-table
+    # walk to r30=29: record 0x80378738 -> descriptor 0x80378420 (flag 1),
+    # whose slot +4 is exactly 0x80163D18. Crash LR=0x8006B038 and CTR/r12
+    # match func_8006AEF0's descriptor+4 indirect call.
+    # Ghidra HEADLESS/read-only proves standalone ownership: predecessor at
+    # 0x80163CF8 tail-branches to 0x8006AE2C at 0x80163D14, so no fallthrough;
+    # target opens a fresh frame at 0x80163D18 and returns at 0x80163D70.
+    # Next framed function begins at 0x80163D74.
+    - 0x80163D18
+    # Fresh PID46604 / base_1789703874_pid46604 crossed the current graph and
+    # hit func_8006A80C's object callback path. Same-PID MEM2 proves live object
+    # 0x9257F540 +0x28 -> descriptor 0x80378420; same-PID MEM1 proves exact
+    # descriptor slot +0x10 -> 0x80163EEC, matching LR=0x8006A85C and CTR/r12.
+    # Ghidra HEADLESS/read-only proves standalone ownership: the rooted
+    # 0x80163D18 routine returns cleanly at 0x80163EE8; target 0x80163EEC is a
+    # distinct frameless leaf ending at 0x80163F00; next framed function starts
+    # at 0x80163F04. Static table 0x80378420 publishes the target at +0x10.
+    - 0x80163EEC
+    # Fresh PID39372 / base_1789685300_pid39372 advanced the same callback-table
+    # walk to r30=30: record 0x80378740 -> descriptor 0x8037B3E0 (flag 1), whose
+    # slot +4 is exactly 0x801D54F8. Crash LR=0x8006B038 and CTR/r12=0x801D54F8
+    # match func_8006AEF0's descriptor+4 indirect call.
+    # Ghidra HEADLESS/read-only proves standalone ownership: predecessor returns
+    # at 0x801D54F4; target opens a fresh frame at 0x801D54F8 and returns at
+    # 0x801D5550. Next real function starts at 0x801D5554; 0x801D5598 is a
+    # separate BLR stub and the next framed function starts at 0x801D559C.
+    - 0x801D54F8
+    # Fresh PID36648 / base_1789686007_pid36648 reached this target through the
+    # fixed descriptor used by func_8005F1E0's final optional initialization
+    # path: r4=0x80379278, whose slot +4 is exactly 0x801A6194. func_8006AE2C /
+    # func_8006AEF0 load that slot into CTR and call with LR=0x8006B038, exactly
+    # matching the crash. This is not inferred from the earlier r30 table walk.
+    # Ghidra HEADLESS/read-only proves standalone ownership: predecessor returns
+    # at 0x801A6190; target opens its own frame at 0x801A6194 and returns at
+    # 0x801A61D0. 0x801A61D4 is a separate BLR stub; next framed function starts
+    # at 0x801A61D8.
+    - 0x801A6194
+    # Fresh PID33392 / base_1789686271_pid33392 reached this callback through
+    # func_8006A80C: live object 0x92691E40 has descriptor pointer 0x80373540 at
+    # +0x28; descriptor slot +0x10 is exactly 0x8008A0A8. func_8006A80C loads
+    # [object+0x28], then [descriptor+0x10] into CTR and calls it with
+    # LR=0x8006A85C, exactly matching the crash.
+    # Ghidra HEADLESS/read-only proves a standalone one-instruction tail thunk:
+    # predecessor returns at 0x8008A0A4; target is exactly 0x8008A0A8
+    # `b 0x8008A19C`; next independent framed function starts at 0x8008A0AC.
+    - 0x8008A0A8
+    # Fresh PID40904 / base_1789686493_pid40904 reached this callback through
+    # func_8006A80C. Live object 0x92691E80 contains descriptor 0x8037BA78 at
+    # +0x28; descriptor slot +0x10 is exactly 0x802037D0. The generated caller
+    # loads object+0x28 then descriptor+0x10 into CTR and calls with
+    # LR=0x8006A85C, exactly matching the crash.
+    # Ghidra HEADLESS/read-only proves standalone ownership: predecessor framed
+    # routine returns at 0x802037C8, 0x802037CC is a separate BLR stub, target
+    # 0x802037D0 is its own one-instruction BLR callback, and next framed
+    # function begins at 0x802037D4.
+    - 0x802037D0
+    # Fresh PID34844 / base_1789686738_pid34844 reached this callback through
+    # func_8006A80C. Live object 0x926937A0 contains descriptor 0x8037B128 at
+    # +0x28; descriptor slot +0x10 is exactly 0x801CD274. The generated caller
+    # loads object+0x28 then descriptor+0x10 into CTR and calls with
+    # LR=0x8006A85C, exactly matching the crash.
+    # Ghidra HEADLESS/read-only proves standalone ownership: predecessor framed
+    # routine 0x801CD254..0x801CD270 returns cleanly; target 0x801CD274 is its
+    # own one-instruction BLR callback; next framed function starts at
+    # 0x801CD278.
+    - 0x801CD274
+    # Fresh PID35296 / base_1789687008_pid35296 reached this callback through
+    # func_8006A80C. Live object 0x926B11E0 contains descriptor 0x80377508 at
+    # +0x28; descriptor slot +0x10 is exactly 0x801329BC. The generated caller
+    # loads object+0x28 then descriptor+0x10 into CTR and calls with
+    # LR=0x8006A85C, exactly matching the crash.
+    # Ghidra HEADLESS/read-only proves standalone ownership: immediate
+    # predecessors 0x801329A4..0x801329AC and 0x801329B0..0x801329B8 are
+    # separate tail-thunks; target 0x801329BC is its own one-instruction BLR
+    # callback; next framed function starts at 0x801329C0.
+    - 0x801329BC
+    # Fresh PID37824 / base_1789687264_pid37824 reached this callback through
+    # func_8006A80C. Live object 0x926B12A0 contains descriptor 0x80377CD0 at
+    # +0x28; descriptor slot +0x10 is exactly 0x8014D9FC. The generated caller
+    # loads object+0x28 then descriptor+0x10 into CTR and calls with
+    # LR=0x8006A85C, exactly matching the crash.
+    # Ghidra HEADLESS/read-only proves standalone ownership: framed predecessor
+    # returns at 0x8014D9E8; 0x8014D9EC..0x8014D9F0 and
+    # 0x8014D9F4..0x8014D9F8 are separate tail-thunks; target 0x8014D9FC is its
+    # own one-instruction BLR callback; next framed function starts at
+    # 0x8014DA00.
+    - 0x8014D9FC
+    # Fresh authoritative PID38708 / base_1789718283_pid38708 reached this
+    # descriptor callback through func_8006AEF0. Active record #2 is
+    # 0x80372CD0 -> descriptor 0x80376A48; same-PID MEM1 proves descriptor
+    # slot +4 is exactly 0x800F4C10. Guest bytes show `lwz r12,4(r4)` at
+    # 0x8006B01C, `mtctr` at 0x8006B030 and `bctrl` at 0x8006B034, whose
+    # architectural return address is the crash LR 0x8006B038.
+    # Ghidra HEADLESS/read-only proves standalone ownership: predecessor
+    # returns at 0x800F4C0C; target opens a fresh 0x20-byte frame at
+    # 0x800F4C10 and returns at 0x800F4D54; next function starts 0x800F4D58.
+    - 0x800F4C10
+    # Fresh PID46052 / base_1789719609_pid46052 reached this callback through
+    # func_8006A690. Same-PID list header 0x9257EDE0 has head +4=0x9257EE00;
+    # that node has descriptor +0x28=0x803787A8, whose slot +0 is exactly
+    # 0x8017F2A8. Caller loads node+0x28, then descriptor+0 into CTR and bctrls
+    # at 0x8006A6D8, giving architectural LR 0x8006A6DC as in the crash.
+    # Ghidra HEADLESS/read-only proves standalone ownership: predecessor ends
+    # 0x8017F2A4 blr; target is a conditional leaf 0x8017F2A8..0x8017F2C0;
+    # next independent framed function starts at 0x8017F2C4.
+    - 0x8017F2A8
+    # Fresh PID36432 / base_1789720089_pid36432 advanced the same func_8006A690
+    # linked-list dispatcher to live node 0x9257EE40. Same-PID memory proves
+    # node+0x28=0x803782F8 and descriptor slot +0=0x80160CEC; crash LR remains
+    # the exact bctrl return 0x8006A6DC. HEADLESS proves standalone ownership:
+    # predecessor returns at 0x80160CE8; target opens a fresh 0x10-byte frame
+    # at 0x80160CEC and returns at 0x80160DD4; 0x80160DD8 is a separate BLR stub.
+    - 0x80160CEC
+    # Fresh PID46956 / base_1789720283_pid46956 advanced func_8006A690 to
+    # live node 0x9257EE80. Same-PID node+0x28=0x803792D8 and descriptor slot
+    # +0 is exactly 0x801AE5B8; caller bctrl return remains LR 0x8006A6DC.
+    # HEADLESS proves standalone ownership: predecessor ends 0x801AE5B4 blr;
+    # target is a leaf 0x801AE5B8..0x801AE5CC; 0x801AE5D0 is a separate BLR
+    # and 0x801AE5D4 starts the next framed function.
+    - 0x801AE5B8
+    # Fresh PID46640 / base_1789720478_pid46640 advanced func_8006A690 to
+    # live node 0x9257EEC0. Same-PID node+0x28=0x803792A8 and descriptor slot
+    # +0 is exactly 0x801AB014; the dispatcher return LR is 0x8006A6DC.
+    # HEADLESS proves standalone ownership: predecessor ends 0x801AB010 blr;
+    # target is a leaf 0x801AB014..0x801AB028; next framed function starts
+    # independently at 0x801AB02C.
+    - 0x801AB014
+    # Fresh PID22864 / base_1789720678_pid22864 advanced func_8006A690 to
+    # live node 0x9257EF00. Same-PID node+0x28=0x803782E0 and descriptor slot
+    # +0 is exactly 0x8015BD1C; bctrl return remains LR 0x8006A6DC.
+    # HEADLESS proves standalone ownership: predecessor ends 0x8015BD18 blr;
+    # target owns a fresh 0x10-byte frame 0x8015BD1C..0x8015BD78;
+    # 0x8015BD7C is a separate BLR stub and 0x8015BD80 another function.
+    - 0x8015BD1C
+    # Fresh authoritative PID12892 / base_1789764958_pid12892 revisited the
+    # same coherent live node 0x9257EF00 through func_8006A740's descriptor
+    # slot +0x0C path (architectural LR 0x8006A784). Same-PID node+0x28 is
+    # 0x803782E0 and descriptor +0x0C is exactly 0x8015BD7C. HEADLESS proves
+    # predecessor 0x8015BD78 blr, target standalone one-instruction blr, and
+    # next framed boundary 0x8015BD80.
+    - 0x8015BD7C
+    # Fresh PID41868 / base_1789720900_pid41868 advanced func_8006A690 to
+    # live node 0x9257EF40. Same-PID node+0x28=0x803789A0 and descriptor slot
+    # +0 is exactly 0x8018C954; the bctrl return LR is 0x8006A6DC.
+    # HEADLESS proves standalone ownership: predecessor ends 0x8018C950 blr;
+    # target owns a fresh 0x10-byte frame 0x8018C954..0x8018C974;
+    # next separate callback begins at 0x8018C978.
+    - 0x8018C954
+    # Parity-safe accelerated closure from the SAME PID12892 live list: the
+    # immediate successor node 0x9257EF40 is reciprocally linked to EF00,
+    # shares owner 0x9257EDE0, and publishes descriptor 0x803789A0 whose
+    # slot +0x0C is 0x8018C978. All later nodes in this same list publish
+    # zero in slot +0x0C. HEADLESS proves predecessor 0x8018C974 blr; target
+    # is a standalone conditional leaf/tail callback ending either beqlr or
+    # a tail branch to 0x8006B5E0; next separate boundary is 0x8018C998.
+    - 0x8018C978
+    # Fresh PID47884 / base_1789721116_pid47884 advanced func_8006A690 to
+    # live node 0x9257EF80. Same-PID crash state has r30/r31/r3=0x9257EF80,
+    # r4=0x8037B050 and r12/CTR=0x801C6540; caller semantics are exactly
+    # node+0x28 -> descriptor, descriptor+0 -> CTR, bctrl at 0x8006A6D8,
+    # producing architectural LR 0x8006A6DC. HEADLESS re-confirms standalone
+    # ownership: predecessor returns at 0x801C653C; target is exactly
+    # 0x801C6540 `blr`; next distinct framed function starts at 0x801C6544.
+    - 0x801C6540
+    # Fresh PID15424 / base_1789722664_pid15424 reached descriptor slot +0
+    # through func_8006A690. Same-PID live node 0x925A14C0 has
+    # +0x28=0x8037B068; descriptor +0 is exactly 0x801C6C18. The caller
+    # executes bctrl at 0x8006A6D8 and produces architectural LR 0x8006A6DC.
+    # HEADLESS proves standalone ownership: predecessor ends 0x801C6C14 blr;
+    # target opens its own aligned 0xC0-byte stack frame and returns at
+    # 0x801C6E04; next independent function starts at 0x801C6E08.
+    - 0x801C6C18
+    # Fresh PID13044 / base_1789723108_pid13044 advanced func_8006A690 to
+    # live node 0x9257EFC0. Same-PID node+0x28=0x8037B980 and descriptor
+    # slot +0 is exactly 0x801FA9BC; caller returns to LR 0x8006A6DC.
+    # HEADLESS proves predecessor 0x801FA9B8 blr, target 0x801FA9BC blr,
+    # and next independent aligned-stack function at 0x801FA9C0.
+    - 0x801FA9BC
+    # Fresh PID36652 / base_1789723722_pid36652 advanced func_8006A690 to
+    # live node 0x9257F000. Same-PID node+0x28=0x80379428; descriptor +0
+    # is 0x801B9F50 and the bctrl at 0x8006A6D8 returns to LR 0x8006A6DC.
+    # HEADLESS proves predecessor 0x801B9F4C blr; target owns the independent
+    # leaf reset body 0x801B9F50..0x801B9F6C; next separate stub is 0x801B9F70.
+    - 0x801B9F50
+    # Fresh PID43560 / base_1789723983_pid43560 advanced func_8006A690 to
+    # live node 0x9257F040. Same-PID node+0x28=0x8037B950; descriptor +0
+    # is 0x801F661C and bctrl at 0x8006A6D8 returns to LR 0x8006A6DC.
+    # HEADLESS proves predecessor 0x801F6618 blr; target owns independent
+    # leaf reset body 0x801F661C..0x801F6650; next separate stub is 0x801F6654.
+    - 0x801F661C
+    # Fresh PID43260 / base_1789724175_pid43260 advanced func_8006A690 to
+    # live node 0x9257F080. Same-PID node+0x28=0x8037B738; descriptor +0
+    # is 0x801EFF74 and bctrl at 0x8006A6D8 returns to LR 0x8006A6DC.
+    # HEADLESS proves predecessor 0x801EFF70 blr; target leaf reset body
+    # 0x801EFF74..0x801EFF84 is standalone; next separate stub is 0x801EFF88.
+    - 0x801EFF74
+    # Fresh PID32220 / base_1789724369_pid32220 advanced func_8006A690 to
+    # live node 0x9257F0C0. Same-PID node+0x28=0x80378870; descriptor +0
+    # is 0x801836F0 and bctrl returns to architectural LR 0x8006A6DC.
+    # HEADLESS proves predecessor 0x801836EC blr; target 0x801836F0 is a
+    # standalone one-instruction blr stub; 0x801836F4 is a separate stub.
+    - 0x801836F0
+    # Fresh PID47660 / base_1789724575_pid47660 advanced func_8006A690 to
+    # live node 0x9257F100. Same-PID node+0x28=0x803788E0; descriptor +0
+    # is 0x80184EC8 and the indirect bctrl returns to LR 0x8006A6DC.
+    # HEADLESS proves predecessor 0x80184EC4 blr; target owns its framed
+    # 8-entry loop through 0x80184F14; next independent frame starts 0x80184F18.
+    - 0x80184EC8
+    # Fresh PID31724 / base_1789724786_pid31724 advanced func_8006A690 to
+    # live node 0x9257F140. Same-PID node+0x28=0x80378570; descriptor +0
+    # is 0x8016FB88 and the indirect bctrl returns to LR 0x8006A6DC.
+    # HEADLESS proves predecessor 0x8016FB84 blr; target owns framed dual-loop
+    # body through 0x8016FC00; next separate stub is 0x8016FC04.
+    - 0x8016FB88
+    # Fresh PID45468 / base_1789725053_pid45468 advanced func_8006A690 to
+    # live node 0x9257F180. Same-PID node+0x28=0x8037B708; descriptor +0
+    # is 0x801EFD34 and the indirect bctrl returns to LR 0x8006A6DC.
+    # HEADLESS proves predecessor 0x801EFD30 blr; target is a standalone
+    # two-instruction tail thunk at 0x801EFD34..0x801EFD38; next independent
+    # framed function begins at 0x801EFD3C.
+    - 0x801EFD34
+    # Fresh PID9692 / base_1789759916_pid9692 advanced func_8006A690 to
+    # live node 0x9257F1C0. Same-PID node+0x28=0x80378378; descriptor +0
+    # is 0x801631F8 and the indirect bctrl returns to LR 0x8006A6DC.
+    # HEADLESS proves predecessor 0x801631F4 blr; target 0x801631F8 is a
+    # standalone one-instruction blr stub; 0x801631FC is a separate blr stub.
+    - 0x801631F8
+    # Fresh PID11392 / base_1789760148_pid11392 advanced func_8006A690 to
+    # live node 0x9257F200. Same-PID node+0x28=0x8037B9B0; descriptor +0
+    # is 0x801FB290 and the indirect bctrl returns to LR 0x8006A6DC.
+    # HEADLESS proves predecessor 0x801FB28C blr; target is the standalone
+    # two-instruction tail thunk 0x801FB290..0x801FB294; 0x801FB298 is separate.
+    - 0x801FB290
+    # Fresh PID13084 / base_1789760369_pid13084 advanced func_8006A690 to
+    # live node 0x9257F240. Same-PID node+0x28=0x80378348; descriptor +0
+    # is 0x80161574 and the indirect bctrl returns to LR 0x8006A6DC.
+    # HEADLESS proves predecessor 0x80161570 blr; target 0x80161574 is a
+    # standalone one-instruction blr stub; next framed function starts 0x80161578.
+    - 0x80161574
+    # Fresh PID2720 / base_1789760564_pid2720 advanced func_8006A690 to
+    # live node 0x9257F280. Same-PID node+0x28=0x80378888; descriptor +0
+    # is 0x80183EA4 and the indirect bctrl returns to LR 0x8006A6DC.
+    # HEADLESS proves predecessor 0x80183E9C blr; 0x80183EA0 is separate;
+    # target 0x80183EA4 is standalone blr; next function starts 0x80183EA8.
+    - 0x80183EA4
+    # Fresh PID10996 / base_1789760745_pid10996 advanced func_8006A690 to
+    # live node 0x9257F2C0. Same-PID node+0x28=0x80378940; descriptor +0
+    # is 0x8018764C and the indirect bctrl returns to LR 0x8006A6DC.
+    # HEADLESS proves predecessor 0x80187648 blr; target 0x8018764C is
+    # standalone blr; 0x80187650 is a separate blr stub.
+    - 0x8018764C
+    # Fresh PID13072 / base_1789760917_pid13072 advanced func_8006A690 to
+    # live node 0x9257F300. Same-PID node+0x28=0x80378540; descriptor +0
+    # is 0x8016EBA8 and the indirect bctrl returns to LR 0x8006A6DC.
+    # HEADLESS proves predecessor 0x8016EBA4 blr; target 0x8016EBA8 is
+    # standalone blr; 0x8016EBAC is a separate blr stub.
+    - 0x8016EBA8
+    # Fresh PID15448 / base_1789761103_pid15448 advanced func_8006A690 to
+    # live node 0x9257F340. Same-PID node+0x28=0x803784E0; descriptor +0
+    # is 0x801690EC and the indirect bctrl returns to LR 0x8006A6DC.
+    # HEADLESS proves predecessor 0x801690E8 blr; target 0x801690EC is a
+    # standalone one-instruction blr stub; 0x801690F0 is a separate blr stub
+    # and the next framed function begins at 0x801690F4.
+    - 0x801690EC
+    # Fresh PID11148 / base_1789763213_pid11148 advanced func_8006A690 to
+    # live node 0x9257F380. Same-PID node+0x28=0x80378748; descriptor +0
+    # is 0x8017869C and the indirect bctrl returns to LR 0x8006A6DC.
+    # HEADLESS proves predecessor 0x80178698 blr; target 0x8017869C is a
+    # standalone one-instruction blr stub; 0x801786A0 is a separate tail thunk.
+    - 0x8017869C
+    # Fresh PID13000 / base_1789763470_pid13000 advanced func_8006A690 to
+    # live node 0x9257F3C0. Same-PID node+0x28=0x80378608; descriptor +0
+    # is 0x80173EB4 and the indirect bctrl returns to LR 0x8006A6DC.
+    # HEADLESS proves predecessor 0x80173EB0 blr; target 0x80173EB4 is a
+    # standalone one-instruction blr stub; 0x80173EB8 is a separate blr stub
+    # and the next framed function starts at 0x80173EBC.
+    - 0x80173EB4
+    # Fresh PID12856 / base_1789763685_pid12856 advanced func_8006A690 to
+    # live node 0x9257F400. Same-PID node+0x28=0x803785D8; descriptor +0
+    # is 0x8016FDCC and the indirect bctrl returns to LR 0x8006A6DC.
+    # HEADLESS proves predecessor 0x8016FDC8 blr; target 0x8016FDCC is a
+    # standalone one-instruction blr stub; 0x8016FDD0 is a separate blr stub
+    # and the next framed function starts at 0x8016FDD4.
+    - 0x8016FDCC
+    # Accelerated parity-safe live-list closure from authoritative PID13000 /
+    # base_1789763470_pid13000. Node 0x9257F440 is the coherent successor of
+    # the runtime-confirmed 0x9257F400 node; descriptor 0x80378778 publishes
+    # slot +0=0x8017E388. HEADLESS proves predecessor 0x8017E384 blr, target
+    # standalone blr, 0x8017E38C separate blr, next framed 0x8017E390.
+    - 0x8017E388
+    # Same authoritative live-list closure: node 0x9257F480, descriptor
+    # 0x80378970, slot +0=0x80187B20. HEADLESS proves predecessor
+    # 0x80187B1C blr and target standalone one-instruction blr.
+    - 0x80187B20
+    # Same authoritative live-list closure: node 0x9257F4C0, descriptor
+    # 0x80378510, slot +0=0x80169C14. HEADLESS proves a standalone conditional
+    # leaf/tail thunk ending at tail branch 0x8006B52C; predecessor ends
+    # 0x80169C10 blr and next separate boundary is 0x80169C34.
+    - 0x80169C14
+    # Same authoritative live-list closure: node 0x9257F500, descriptor
+    # 0x8037B9E0, slot +0=0x801FC11C. HEADLESS proves its own 0x10-byte frame,
+    # independent body/epilogue through 0x801FC25C blr; next function 0x801FC260.
+    - 0x801FC11C
+    # Same authoritative live-list closure: node 0x9257F540, descriptor
+    # 0x80378420, slot +0=0x80163DA4. HEADLESS proves a standalone dynamically
+    # aligned framed callback ending 0x80163EE8 blr; next boundary 0x80163EEC.
+    - 0x80163DA4
+    # Same authoritative live-list closure reaches header tail node 0x9257F580,
+    # descriptor 0x8037B3E0, slot +0=0x801D5598. HEADLESS proves predecessor
+    # 0x801D5594 blr, target standalone blr, next framed function 0x801D559C.
+    - 0x801D5598
+    # Fresh PID9648 / base_1789764073_pid9648 reached a different coherent list:
+    # header 0x9257CAC0 -> ... -> live/tail node 0x9257CBE0. Same-PID node+0x28
+    # is descriptor 0x80379278 and descriptor +0 is exactly 0x801A61D8.
+    # func_8006A690 calls slot +0 with architectural LR 0x8006A6DC.
+    # HEADLESS proves target owns frame 0x801A61D8..0x801A6234 and next real
+    # function begins at 0x801A6238.
+    - 0x801A61D8
+    # Fresh PID16504 / base_1789764334_pid16504 reached func_8006A740's
+    # descriptor slot +0x0C: object 0x92691E80 has +0x28=0x8037BA78 and
+    # descriptor +0x0C=0x802037CC. The indirect bctrl returns to LR
+    # 0x8006A784 exactly as captured. HEADLESS proves predecessor framed
+    # routine ends 0x802037C8 blr; target 0x802037CC is standalone blr;
+    # 0x802037D0 is a separate blr and 0x802037D4 begins a framed function.
+    - 0x802037CC
+    # Fresh PID1156 / base_1789764679_pid1156 reached func_8006A740's second
+    # descriptor slot +0x0C call site (architectural LR 0x8006A7CC). Same-PID
+    # MEM2 proves coherent child-list header 0x92693780 with head 0x926937A0
+    # and tail 0x926937E0; both nodes use descriptor 0x8037B128, whose +0x0C
+    # slot is exactly 0x801CD254. HEADLESS proves predecessor 0x801CD250 blr;
+    # target owns a fresh 0x10-byte frame through 0x801CD270 blr; 0x801CD274
+    # is a separate blr stub and 0x801CD278 starts another framed function.
+    - 0x801CD254
+    # Fresh PID17008 / base_1789765317_pid17008 reached func_800C6A08's
+    # current-state record slot +8. Same-PID SDA 0x8062A7F0 -> state
+    # 0x92353D60, index 1, table base 0x80374D30, active 24-byte record
+    # 0x80374D48, whose +8 slot is exactly 0x800DE7D4. The indirect bctrl
+    # returns to architectural LR 0x800C6A6C. HEADLESS proves predecessor
+    # ends 0x800DE7D0 blr; target owns a fresh 0x10-byte frame through
+    # 0x800DEA08 blr; next real framed function starts at 0x800DEA0C.
+    - 0x800DE7D4
+    # Fresh PID24768 / base_1789765595_pid24768 reached the callback stored
+    # directly at state object slot 0: func_800DE7D4 receives r3=0x92353D64,
+    # keeps it in r31, then guest 0x800DE964 loads r12=[r31]=0x800DE330 and
+    # bctrl returns to LR 0x800DE978. Same-PID state root/table cross-check:
+    # 0x8062A7F0 -> 0x92353D60, index 1, table base 0x80374D30, active record
+    # 0x80374D48, whose +0x14 is also 0x800DE330. HEADLESS proves predecessor
+    # ends 0x800DE32C blr; target owns a fresh frame through 0x800DE3E8 blr;
+    # next separate leaf starts at 0x800DE3EC.
+    - 0x800DE330
+    # Fresh PID11240 / base_1789765803_pid11240 reached func_8006A948's
+    # descriptor slot +0x14 callback. Same-PID live node 0x92691E40 has
+    # +0x28 descriptor 0x80373540, whose +0x14 is exactly 0x8008A0AC;
+    # the indirect bctrl returns to architectural LR 0x8006A998.
+    # HEADLESS proves predecessor framed routine ends 0x8008A0A4 blr;
+    # sibling 0x8008A0A8 is an unconditional branch elsewhere; target owns
+    # a fresh 0x10-byte frame through 0x8008A0C8 blr; next framed boundary
+    # is 0x8008A0CC.
+    - 0x8008A0AC
+    # Fresh PID21016 / base_1789766062_pid21016 reached func_8006A948's
+    # descriptor slot +0x14 callback. Same-PID child list is coherent:
+    # parent 0x9257CAE0 -> header 0x92691E20 -> live node 0x92691E80,
+    # whose +0x28 descriptor is 0x8037BA78 and +0x14 is exactly 0x80203790.
+    # The indirect bctrl at guest 0x8006A994 returns to architectural LR
+    # 0x8006A998. HEADLESS proves predecessor ends 0x8020378C blr; target
+    # owns a fresh 0x10-byte frame through 0x802037C8 blr; 0x802037CC and
+    # 0x802037D0 are separate leaf callbacks and 0x802037D4 is framed.
+    - 0x80203790
+    # Fresh PID4496 / base_1789781721_pid4496 reached func_8006A948's second
+    # descriptor slot +0x14 callback, returning to architectural LR 0x8006A9EC.
+    # Same-PID child-list header 0x92693780 has live node 0x926937A0 with
+    # descriptor +0x28 = 0x8037B128; descriptor +0x14 = 0x801CD278 exactly.
+    # HEADLESS proves 0x801CD274 is a separate blr leaf; target opens a fresh
+    # 0x10-byte frame at 0x801CD278 and owns its epilogue through 0x801CD324
+    # blr. The next framed function starts independently at 0x801CD328.
+    - 0x801CD278
+    # Fresh PID13672 / base_1789781916_pid13672 reached func_8006A80C's
+    # descriptor slot +0x10 callback. Same-PID live node 0x926BC980 belongs
+    # to coherent header/list 0x926BC8A0 and has +0x28 descriptor 0x80377D00;
+    # descriptor +0x10 is exactly 0x8014E93C. The indirect bctrl returns to
+    # architectural LR 0x8006A85C. HEADLESS proves target is a standalone
+    # one-instruction blr leaf; next real function starts at 0x8014E940.
+    - 0x8014E93C
+    # Fresh PID7424 / base_1789782332_pid7424 reached func_8006A948's
+    # descriptor slot +0x14 callback. Same-PID recursive list resolves
+    # 0x9257EF00 +0x28 -> 0x803782E0 and descriptor +0x14 -> 0x8015BD80;
+    # bctrl returns to architectural LR 0x8006A998. HEADLESS proves a
+    # standalone aligned-stack function ending at 0x8015BE54; next function
+    # starts independently at 0x8015BE58.
+    - 0x8015BD80
+    # Parity-safe same-snapshot closure from PID7424's coherent +0x14 lane:
+    # immediate successor node 0x9257EF40 -> descriptor 0x803789A0 ->
+    # +0x14=0x8018C99C. HEADLESS proves its own aligned frame and epilogue
+    # through 0x8018CB1C; next framed boundary is 0x8018CB20.
+    - 0x8018C99C
+    # Same PID7424 traversal descends from 0x9257EF80 into child header
+    # 0x925A14A0; nodes 0x925A14C0 and 0x925A1500 both publish descriptor
+    # 0x8037B068 slot +0x14=0x801C6E08. HEADLESS proves an independent
+    # aligned-stack function ending 0x801C768C; next boundary 0x801C7690.
+    - 0x801C6E08
+    # Same coherent PID7424 lane later reaches node 0x9257F480, descriptor
+    # 0x80378970, slot +0x14=0x80187B24. HEADLESS proves target is exactly
+    # a standalone one-instruction blr; 0x80187B28 is another separate leaf
+    # and 0x80187B2C begins a framed function.
+    - 0x80187B24
+    # Same coherent PID7424 lane later reaches node 0x9257F500, descriptor
+    # 0x8037B9E0, slot +0x14=0x801FC260. HEADLESS proves a standalone framed
+    # routine with own epilogue ending 0x801FC300; next framed boundary
+    # starts at 0x801FC304.
+    - 0x801FC260
+    # Fresh PID1116 / base_1789782792_pid1116 reached the command-dispatch
+    # callback selected by func_8000DD10. Same-PID parser state
+    # 0x91936F20 has current stream pointer +0x18=0x91938B00, whose next
+    # command halfword is key 0x0006. SDA table root [0x8062A3EC] points to
+    # 0x80370AF0; table entry key 6 publishes callback 0x8000CDAC.
+    # func_8000E130 keeps that result in r21/r12 and bctrl at 0x8000E4CC
+    # returns to architectural LR 0x8000E4D0. HEADLESS proves predecessor
+    # ends at 0x8000CDA8 blr; target owns a fresh frame through
+    # 0x8000CE60 blr; next framed boundary is 0x8000CE64.
+    - 0x8000CDAC
+    # Fresh PID15476 / base_1789783044_pid15476 crossed key 6 and advanced
+    # the same parser stream: object 0x91936F20 now has +0x18=0x91938B04,
+    # whose next command halfword is 0x0007. The same SDA dispatch table
+    # 0x80370AF0 publishes key 7 -> 0x8000D0A0, and func_8000E130 calls it
+    # with architectural LR 0x8000E4D0. HEADLESS proves predecessor returns
+    # at 0x8000D09C; target owns a fresh frame through 0x8000D154 blr;
+    # next framed boundary is 0x8000D158.
+    - 0x8000D0A0
+    # Fresh PID15752 / base_1789783209_pid15752 advanced the same parser
+    # stream to current pointer 0x91938B44, whose command word 0x000D0001
+    # selects key 13. The SDA table 0x80370AF0 record at 0x80370B50 is
+    # {13,0x8000D3D0}; func_8000E130 dispatches it with architectural
+    # LR 0x8000E4D0. HEADLESS proves predecessor returns at 0x8000D3CC;
+    # target owns a fresh 0x20-byte frame through 0x8000D674 blr, and the
+    # next framed function starts independently at 0x8000D678.
+    - 0x8000D3D0
+    # Fresh PID2196 / base_1789784530_pid2196 crossed key13 and advanced the
+    # same parser stream to +0x18=0x91938B48. That word is 0x000E0001, so
+    # func_8000DD10 selects key14 from record 0x80370B58={14,0x8000D678};
+    # func_8000E130 dispatches it with architectural LR 0x8000E4D0.
+    # HEADLESS proves predecessor returns at 0x8000D674; target owns its own
+    # 0x20-byte frame through 0x8000D97C blr; next framed function 0x8000D980.
+    - 0x8000D678
+    # Fresh PID8884 / base_1789784711_pid8884 reached func_800C6A08's
+    # second state-record callback. Same-PID [0x8062A7F0]=0x92353D60,
+    # index=1 and +0x104 table=0x80374D30 select record 0x80374D48;
+    # record +0x0C is exactly 0x800DEA0C. func_800C6A08 loads that slot and
+    # bctrl returns to architectural LR 0x800C6AC4. HEADLESS proves the
+    # predecessor ends 0x800DEA08 blr; target owns a fresh 0x10-byte frame
+    # through 0x800DEA5C blr; next framed boundary is 0x800DEA60.
+    - 0x800DEA0C
+    # Fresh PID9584 / base_1789784909_pid9584 returned to the parser dispatcher
+    # and advanced to stream pointer 0x91938B4C, whose word 0x00080201 selects
+    # key 8. Same-PID table record 0x80370B20 is {8,0x8000CE64}. The
+    # func_8000E130 r3=4 dispatch lane calls r21/r12 with architectural
+    # LR 0x8000E498. HEADLESS proves predecessor 0x8000CE60 blr; target
+    # owns a fresh 0x10-byte frame through 0x8000CFF4 blr; next framed
+    # function starts at 0x8000CFF8.
+    - 0x8000CE64
+    # Fresh PID4164 / base_1789785080_pid4164 advanced the parser stream to
+    # +0x18=0x91938B58, whose word 0x00040001 selects key 4. Same-PID table
+    # record 0x80370B08 is {4,0x8000CBAC}; func_8000E130 dispatches through
+    # its r3=4 lane with architectural LR 0x8000E498. HEADLESS proves the
+    # preceding 0x8000CBA4 stub returns at 0x8000CBA8; target owns a fresh
+    # 0x10-byte frame through 0x8000CC18 blr; next function starts 0x8000CC1C.
+    - 0x8000CBAC
+    # Fresh PID15052 / base_1789785276_pid15052 reached func_8012B4D4's
+    # indexed callback dispatcher. Same-PID r23=0x8035F830 indexes a coherent
+    # identity table and r24=0x803770A8 is the callback vector; the selected
+    # offset is 0x58, so [0x80377100]=0x80127CF4. The bctrl returns to
+    # architectural LR 0x8012B768. HEADLESS proves predecessor ends
+    # 0x80127CF0 blr; target owns a fresh 0x10-byte frame through 0x80127D28
+    # blr; next framed boundary is 0x80127D2C.
+    - 0x80127CF4
+    # Fresh PID4492 / base_1789785451_pid4492 reached the same func_8012B4D4
+    # indexed callback vector with final offset 0x08. Same-PID r24 is
+    # 0x803770A8, so [0x803770B0]=0x801274A8 exactly matches r12/CTR; bctrl
+    # returns to architectural LR 0x8012B768. HEADLESS proves the preceding
+    # sibling leaf returns at 0x801274A4; target owns a fresh 0x10-byte frame
+    # through 0x801274FC blr; next independent boundary is 0x80127500.
+    - 0x801274A8
+    # Fresh PID3644 / base_1789785618_pid3644 reached the same callback vector
+    # with final offset 0x04. Same-PID r24=0x803770A8 gives
+    # [0x803770AC]=0x801274A0, matching r12/CTR and LR 0x8012B768.
+    # HEADLESS shows a standalone two-instruction leaf at 0x801274A0..0x801274A4;
+    # next function is the separately translated 0x801274A8.
+    - 0x801274A0
+    # Fresh PID5148 / base_1789785752_pid5148 reached func_80054FE4's indexed
+    # global callback table. Same-PID object 0x92341140 has current state
+    # +0x13E4=11 and no pending transition (+0x13E8=0xFFFFFFFF); table base
+    # 0x80372558 plus state<<2 selects [0x80372584]=0x8004DE30. The callsite
+    # dispatches it with r3=object, r4=0 and architectural LR 0x80055168.
+    # HEADLESS proves predecessor returns at 0x8004DE2C; target owns a fresh
+    # 0x30-byte frame through 0x8004E0FC blr; next framed boundary 0x8004E100.
+    - 0x8004DE30
+    # Fresh PID10876 / base_1789786276_pid10876: func_800C6A08 indexes the
+    # coherent 24-byte callback descriptor array for global root 0x92353D60.
+    # Current index 2 selects record 0x80374D60 and slot +0x08 publishes
+    # 0x800DF8E0; bctrl at 0x800C6A68 gives architectural LR 0x800C6A6C.
+    # HEADLESS proves 0x800DF8E0 is a standalone 0x10-byte-frame function,
+    # predecessor 0x800DF8D8..DC is a separate returning leaf, and target
+    # owns 0x800DF8E0..0x800DF9EC; next real boundary is 0x800DF9F0.
+    - 0x800DF8E0
+    # Fresh canonical PID20088 / base_1789839904_pid20088: func_800C6A08
+    # dispatches the sibling callback through record +0x0C with architectural
+    # LR 0x800C6AC4; crash CTR/r12=0x800DF9F0 and r3=root+4/r4=root match the
+    # same coherent 24-byte descriptor family previously observed at index 2.
+    # Ghidra HEADLESS/read-only proves predecessor 0x800DF8E0 ends at
+    # 0x800DF9EC (blr); target owns standalone framed function
+    # 0x800DF9F0..0x800DFA14; next framed boundary starts at 0x800DFA18.
+    # Only this freshly encountered callback is rooted.
+    - 0x800DF9F0
+    # Fresh PID27792: func_800C6A08, LR 0x800C6BB0. Same-PID index 3
+    # selects record 0x80374D78 and record +0 = 0x800DF608.
+    # HEADLESS: predecessor ends at 0x800DF604; target is
+    # 0x800DF608..0x800DF68C; next framed boundary is 0x800DF690.
+    - 0x800DF608
+    # Fresh canonical PID27692 / base_1789840850_pid27692: func_800C6704
+    # calls func_800C69B8 with architectural LR 0x800C6718. Same-PID snapshot
+    # proves [0x8062A7F0]=0x92353D60, current index 3, table 0x80374D30,
+    # record 0x80374D78, and record +0x04 = 0x800DF690. func_800C69B8 loads
+    # record+4 and tail-dispatches it through CTR; crash CTR/r12 match exactly.
+    # Ghidra HEADLESS/read-only proves predecessor 0x800DF608 ends at
+    # 0x800DF68C (blr); target owns standalone framed function
+    # 0x800DF690..0x800DF6D8; next framed boundary starts at 0x800DF6DC.
+    # Only this freshly encountered jump target is rooted.
+    - 0x800DF690
+    # Fresh canonical PID30464 / base_1789841624_pid30464: func_800C6A08 loads
+    # the first callback from the current 24-byte descriptor and bctrls with
+    # architectural LR 0x800C6A6C. Same-PID snapshot proves current index 3,
+    # table 0x80374D30, record 0x80374D78 and record +0x08 = 0x800DF6DC;
+    # crash CTR/r12 match exactly. Ghidra HEADLESS/read-only proves predecessor
+    # ends at 0x800DF6D8 (blr); target owns standalone framed function
+    # 0x800DF6DC..0x800DF86C; next independent leaf starts at 0x800DF870.
+    # Only this freshly encountered callback is rooted.
+    - 0x800DF6DC
+    # Fresh canonical PID1628 / base_1789841839_pid1628: inside func_800DF6DC,
+    # r31 points at 0x92353D64 and the same-PID snapshot proves
+    # [0x92353D64]=0x800DE210. Guest 0x800DF728 loads that exact pointer into
+    # r12/CTR and bctrls it, returning to architectural LR 0x800DF734; crash
+    # CTR/r12/LR match exactly. Ghidra HEADLESS/read-only proves 0x800DE20C is
+    # only a preceding blr; target starts its own frame at 0x800DE210 and owns
+    # standalone function 0x800DE210..0x800DE32C; next boundary is 0x800DE330.
+    # Only this freshly encountered callback is rooted.
+    - 0x800DE210
+    # Fresh PID9932 / base_1789786528_pid9932: func_8012B4D4 reads selector
+    # byte 0x2B from 0x90D11894, maps it through r23=0x8035F830 where entry
+    # 43 is coherently 0x2B, scales to offset 0xAC and loads callback from
+    # r24=0x803770A8 + 0xAC = 0x80377154 -> 0x80129FEC. Architectural
+    # bctrl LR is 0x8012B768 and crash registers match. HEADLESS proves this
+    # is a standalone two-instruction default-arg tail thunk (li r4,0;
+    # b 0x8012933C), with predecessor tail-branching away and next boundary
+    # 0x80129FF4.
+    - 0x80129FEC
+    # Fresh canonical PID21796 / base_1789846493_pid21796: func_8012B4D4 saved
+    # selector 35 at object+0x2F4 (0x9234C164), remapped it through 0x8035F830
+    # to 35, and indexed callback vector 0x803770A8 at exact slot 0x80377134.
+    # SAME-PID MEM1 publishes 0x80129FE8 there (neighbor slots 36/37 publish the
+    # same thunk); crash r17=0x8C, CTR/r12=0x80129FE8 and LR=0x8012B768 match
+    # that bctrl. Ghidra HEADLESS/read-only proves predecessor FUN_80129F1C ends
+    # at 0x80129FE4 (blr); target 0x80129FE8 is a standalone one-instruction
+    # tail thunk `b 0x80128FCC`; 0x80129FEC is the next independent thunk.
+    - 0x80129FE8
+    # Fresh canonical PID8080 / base_1789847537_pid8080: func_8012B4D4 saved
+    # selector 25 at object+0x2F4 (0x9234C164), remapped it through 0x8035F830
+    # to 25, then indexed callback vector 0x803770A8 at exact slot 0x8037710C.
+    # SAME-PID MEM1 publishes 0x80127E74 there; neighboring slots are coherent
+    # callbacks (24 -> 0x80127E38, 26 -> 0x80127F40). Crash CTR/r12=0x80127E74
+    # and architectural LR=0x8012B768 match that bctrl. Ghidra HEADLESS/read-only
+    # proves predecessor FUN_80127E38 is 0x80127E38..0x80127E73; target owns
+    # standalone framed function 0x80127E74..0x80127F3F; next boundary is
+    # independent FUN_80127F40. Only this freshly encountered callback is rooted.
+    - 0x80127E74
+    # Fresh canonical PID9348 / base_1789847763_pid9348: func_8006AE2C stores
+    # its incoming callback-source pointer at object+0x28. SAME-PID object
+    # 0x925C3760 preserves source=0x80378588; caller then loads r12 from
+    # source+0x04, and exact MEM1 [0x8037858C] = 0x8016F478. Neighbor fields
+    # are coherent function pointers: +0x00=0x8016F79C, +0x08=0x8016F750,
+    # +0x0C=0x8016F8C4, +0x10=0x8016F938. Crash CTR/r12=0x8016F478 and
+    # architectural LR=0x8006AEC8 match that indirect bctrl. Ghidra
+    # HEADLESS/read-only proves target is standalone framed function
+    # 0x8016F478..0x8016F74F; next independent function begins 0x8016F750.
+    # Only this freshly encountered callback is rooted.
+    - 0x8016F478
+    # Fresh canonical PID11412 / base_1789848017_pid11412: func_8006A690 reads
+    # source pointer from object+0x28. SAME-PID object 0x925C3760 preserves
+    # source=0x80378588, and caller loads r12 from [source+0x00] before bctrl;
+    # exact MEM1 [0x80378588] = 0x8016F79C. Neighbor fields remain coherent
+    # function pointers (+0x04=0x8016F478, +0x08=0x8016F750,
+    # +0x0C=0x8016F8C4, +0x10=0x8016F938). Crash CTR/r12=0x8016F79C and
+    # architectural LR=0x8006A6DC match this indirect call exactly. Ghidra
+    # HEADLESS/read-only proves predecessor FUN_8016F750 is 0x8016F750..0x8016F79B;
+    # target FUN_8016F79C owns 0x8016F79C..0x8016F8C3; next independent
+    # function begins at 0x8016F8C4. Only this freshly encountered callback is rooted.
+    - 0x8016F79C
+    # Fresh canonical PID22776 / base_1789848528_pid22776: func_8016EBB0
+    # hardcodes 24-byte callback descriptor 0x80378558 and calls func_8006AE2C.
+    # SAME-PID MEM2 preserves that descriptor at object+0x28 (0x926246C8),
+    # while exact MEM1 slot +0x04 at 0x8037855C publishes 0x8016E260;
+    # crash CTR/r12=0x8016E260 and architectural LR=0x8006AEC8 match the bctrl.
+    # HEADLESS/read-only proves the predecessor returns at 0x8016E25C; target
+    # opens its own 0x30-byte frame at 0x8016E260 and closes with blr at
+    # 0x8016E6C8. Independent leaf code begins at 0x8016E6CC (ending 0x8016E710)
+    # and the next registered framed function starts at 0x8016E714. Only the
+    # freshly encountered callback 0x8016E260 is rooted; descriptor siblings are not.
+    - 0x8016E260
+    # Fresh PID6148 / base_1789786738_pid6148: func_800CCBA8 reads state
+    # index [r31+8]=0 from r31=0x9234BE98, indexes static table 0x80375078,
+    # and loads table[0]=0x800CC83C. bctrl LR is 0x800CCC18; crash
+    # r3/r4/r12/CTR match exactly. HEADLESS proves a standalone state-setting
+    # wrapper: li r0,1; stw r0,0x30(r3); b 0x800CC848. Predecessor returns at
+    # 0x800CC838 and 0x800CC848 is a separately published framed entry.
+    - 0x800CC83C
+    # Fresh PID3292 / base_1789786983_pid3292: func_80054FE4 has
+    # current state [obj+0x13E4]=13, no pending transition (+0x13E8=-1), and
+    # indexes static callback table 0x80372558 at slot 13 -> 0x8004E1F0.
+    # bctrl LR is 0x80055168 and crash registers agree exactly. HEADLESS
+    # proves a standalone 0x30-byte framed function 0x8004E1F0..0x8004E584;
+    # predecessor returns at 0x8004E1EC and next boundary is 0x8004E588.
+    - 0x8004E1F0
+    # Fresh PID11376 / base_1789787197_pid11376: stable current state 15 at
+    # [obj+0x13E4], pending=-1, indexes callback table 0x80372558 slot 15
+    # at 0x80372594 -> 0x8004E95C. bctrl LR=0x80055168 and crash registers
+    # match. HEADLESS proves standalone 0x40-byte framed function
+    # 0x8004E95C..0x8004F0C0; predecessor returns at 0x8004E958 and next
+    # real boundary is 0x8004F0C4.
+    - 0x8004E95C
+    # Fresh PID6948 / base_1789787434_pid6948: func_8017E79C selects static
+    # descriptor 0x803787D8 for mode 1. The live object 0x92585920 stores the
+    # same descriptor at +0x28, whose slot +4 is 0x8017F9A8. func_8006AE2C
+    # loads that slot and dispatches with r3=object, r4=r5 and architectural
+    # LR 0x8006AEC8. HEADLESS proves predecessor returns at 0x8017F9A4;
+    # target owns a fresh 0x10-byte frame through 0x8017FA70 blr; next framed
+    # boundary is 0x8017FA74.
+    - 0x8017F9A8
+    # Fresh PID20532 / base_1789788635_pid20532: func_8006A690 walks the
+    # current node 0x92585920, whose descriptor pointer at +0x28 is
+    # 0x803787D8. Descriptor slot +0 publishes 0x8017FB40; the caller sets
+    # r3=node, r4=descriptor and dispatches with architectural LR 0x8006A6DC.
+    # HEADLESS proves prior framed code ends at 0x8017FB38 and sibling
+    # 0x8017FB3C tail-branches away; target owns an aligned-stack frame through
+    # 0x8017FE80 blr. Next real boundary is 0x8017FE84.
+    - 0x8017FB40
+    # Fresh PID23236 / base_1789788836_pid23236: func_8006A948 descends from
+    # outer node 0x9257EE00 through manager 0x92585900 to inner node
+    # 0x92585920. Its descriptor at +0x28 is 0x803787D8 and slot +0x14
+    # publishes 0x8017FE84. The second-loop dispatch uses architectural
+    # LR 0x8006A9EC. HEADLESS proves target owns an aligned -0xD0 frame through
+    # 0x80180090 blr; predecessor returns at 0x8017FE80 and next boundary is
+    # 0x80180094.
+    - 0x8017FE84
+    # Fresh PID6696 / base_1789789071_pid6696: func_800CCBA8 reads state 3
+    # from object 0x9234BE70 (selector [r3+0x30]), indexes static callback
+    # table 0x80375078 and loads slot 3 at 0x80375084 -> 0x800CCAD4.
+    # bctrl returns to architectural LR 0x800CCC18. HEADLESS proves predecessor
+    # returns at 0x800CCAD0; target owns a fresh 0x20-byte frame through
+    # 0x800CCBA4 blr; next framed boundary is 0x800CCBA8.
+    - 0x800CCAD4
+    # Fresh canonical PID21180 / base_1789841111_pid21180: func_8012B4D4 reads
+    # selector byte [0x90D124B8+4]=0x05, remaps it through word table
+    # 0x8035F830 at 0x8035F844 -> 5, then indexes callback vector 0x803770A8.
+    # Final offset 0x14 matches crash r0 and exact slot 0x803770BC publishes
+    # 0x80127528; crash CTR/r12 and architectural LR 0x8012B768 match the bctrl.
+    # Ghidra HEADLESS/read-only proves predecessor leaf ends 0x80127524: blr;
+    # target is standalone leaf 0x80127528..0x80127540; next independent leaf
+    # begins at 0x80127544. Only this freshly encountered callback is rooted.
+    - 0x80127528
+    # Fresh PID26584 / base_1789827071_pid26584 on canonical 7CFA77C2...:
+    # func_8012B4D4 remaps selector 7 through 0x8035F84C and dispatches
+    # callback vector 0x803770A8 slot +0x1C -> 0x80127564 with architectural
+    # LR 0x8012B768. Same-PID MEM1 confirms neighboring callback pointers are
+    # coherent. Ghidra HEADLESS proves predecessor ends 0x80127560 blr;
+    # target owns a fresh 0x20-byte frame through 0x801275E0 blr; next
+    # independent function begins at 0x801275E4.
+    - 0x80127564
+    # Fresh PID7500 / base_1789827155_pid7500 on canonical 7CFA77C2...:
+    # object state [0x9234BEA0]=0 selects callback table 0x803744A8 slot 0,
+    # which publishes 0x8009EB08; bctrl returns to architectural LR
+    # 0x800A1468. Same-PID neighboring entries are coherent function pointers.
+    # Ghidra HEADLESS proves predecessor ends 0x8009EB04 blr; target owns a
+    # fresh 0x20-byte frame through 0x8009EC00 blr; next function begins at
+    # 0x8009EC04.
+    - 0x8009EB08
+    # Fresh A294 PID27512 / base_1789830237_pid27512: func_800A1320 uses
+    # selector [0x9234BEA0]=3, indexes callback table 0x803744A8 and reads
+    # slot +0x0C (0x803744B4) -> 0x8009EFD0, then bctrl returns to architectural
+    # LR 0x800A1468 exactly as observed. Same-PID MEM1 has coherent neighbor
+    # callback slots. Ghidra HEADLESS proves predecessor returns at 0x8009EFCC;
+    # target owns its fresh 0x20-byte frame through 0x8009F148 blr; next
+    # standalone neighbor begins at 0x8009F14C.
+    - 0x8009EFD0
+    # Fresh A5C PID30204 / base_1789830766_pid30204: func_8012B4D4 reads
+    # selector byte [0x90D11824]=0x28, remaps through 0x8035F830 and callback
+    # vector 0x803770A8 to slot 0x80377148 -> 0x80129B9C. Crash CTR/r12 and
+    # LR=0x8012B768 match that bctrl exactly. Ghidra HEADLESS proves the
+    # predecessor returns at 0x80129B98; target owns a fresh 0x10-byte frame
+    # through 0x80129BE4 blr; next standalone function begins at 0x80129BE8.
+    - 0x80129B9C
+    # Fresh canonical PID27064 / base_1789842037_pid27064: func_8012B4D4 reads
+    # selector byte [0x90D0F9A4]=0x26 (38), remaps through word table 0x8035F830
+    # at 0x8035F8C8 -> 38, and indexes callback vector 0x803770A8 at exact slot
+    # 0x80377140 -> 0x80129178. Crash r0=0x98, CTR/r12=0x80129178 and
+    # architectural LR=0x8012B768 match the bctrl exactly. Ghidra HEADLESS/
+    # read-only proves predecessor ends at 0x80129174 (blr); target owns
+    # standalone framed function 0x80129178..0x801291D4; next boundary starts
+    # at 0x801291D8. Only this freshly encountered callback is rooted.
+    - 0x80129178
+    # Fresh canonical PID7160 / base_1789844006_pid7160: func_8012B4D4 saved
+    # selector 14 at object+0x2F4 (0x9234C164), remapped it through table
+    # 0x8035F830 to final offset 0x38, then indexed callback vector 0x803770A8.
+    # Exact same-PID vector slot 0x803770E0 publishes 0x80127764; crash r0=0x38,
+    # CTR/r12=0x80127764 and architectural LR=0x8012B768 match that bctrl.
+    # Ghidra HEADLESS/read-only proves predecessor sibling ends 0x80127760: blr;
+    # target is standalone leaf 0x80127764..0x80127778; next independent leaf
+    # begins at 0x8012777C. Only this freshly encountered callback is rooted.
+    - 0x80127764
+    # Fresh canonical PID26936 / base_1789842240_pid26936: func_8012B4D4 reads
+    # selector byte [0x90D12548]=0x20 (32), remaps through word table 0x8035F830
+    # at 0x8035F8B0 -> 32, and indexes callback vector 0x803770A8 at exact slot
+    # 0x80377128 -> 0x80128338. Crash r0=0x80, CTR/r12=0x80128338 and
+    # architectural LR=0x8012B768 match the bctrl exactly. Ghidra HEADLESS/
+    # read-only proves predecessor ends at 0x80128334 (blr); target owns
+    # standalone framed function 0x80128338..0x801283BC; next boundary starts
+    # at 0x801283C0. Only this freshly encountered callback is rooted.
+    - 0x80128338
+    # Fresh diagnostic PID16496 / base_1789832511_pid16496: func_8009EC04
+    # inner dispatcher directly indexes callback vector 0x803744B8 with selector
+    # r27=0; same-PID MEM1 slot 0 is 0x8009F14C and crash CTR/r12 plus
+    # architectural LR=0x8009ED2C match the bctrl exactly. Ghidra HEADLESS
+    # proves predecessor 0x8009EFD0 ends at 0x8009F148; target is the standalone
+    # two-instruction tail wrapper 0x8009F14C..0x8009F150; next boundary begins
+    # at 0x8009F154. Only the encountered slot is rooted.
+    - 0x8009F14C
+    # Fresh canonical PID19016 / base_1789856864_pid19016: func_8009EC04
+    # reconstructs selector r27=2 from SAME-PID object/descriptor state, scales
+    # it to offset 0x08 (matching crash r0), and indexes callback vector
+    # 0x803744B8. Exact slot 0x803744C0 publishes 0x8009F168; crash CTR/r12 and
+    # architectural LR=0x8009ED2C match that bctrl exactly. Neighbor slots are
+    # coherent code callbacks (0 -> 0x8009F14C, 1 -> 0x8009F154,
+    # 3 -> 0x8009F238, 4 -> 0x8009F394); no stomp evidence.
+    # Ghidra HEADLESS/read-only proves predecessor leaf ends 0x8009F164: blr;
+    # target owns standalone framed body 0x8009F168..0x8009F234; next independent
+    # function begins 0x8009F238 with its own frame. Only this callback is rooted.
+    - 0x8009F168
+    # Fresh canonical PID15236 / base_1789852552_pid15236: func_8009EC04
+    # uses selector r27=13, scales it by 4, and indexes static callback vector
+    # 0x803744B8. SAME-PID MEM1 exact slot 0x803744EC publishes 0x8009FADC;
+    # crash r0=0x34, CTR/r12=0x8009FADC and architectural LR=0x8009ED2C
+    # match that bctrl exactly. Neighbor slots are coherent callbacks:
+    # 12 -> 0x8009FA68 and 14 -> 0x8009FB38. Ghidra HEADLESS/read-only
+    # proves predecessor FUN_8009FA68 returns at 0x8009FAD8; target is the
+    # standalone leaf decision body 0x8009FADC..0x8009FB34; next independent
+    # boundary begins at 0x8009FB38. Only this freshly encountered callback is rooted.
+    - 0x8009FADC
+    # Fresh battle/FPS PID7888 / base_1789836674_pid7888: func_8009EC04
+    # indexes the inner callback vector at 0x803744B8; selector/index 14 reads
+    # slot 0x803744F0 = 0x8009FB38, then bctrl at 0x8009ED28 returns to the
+    # observed architectural LR 0x8009ED2C. Ghidra HEADLESS proves predecessor
+    # 0x8009FADC..0x8009FB34 ends independently in blr; target owns the framed
+    # callback 0x8009FB38..0x8009FDEC; next boundary is 0x8009FDF0.
+    # Only the encountered slot is rooted.
+    - 0x8009FB38
+    # Fresh canonical PID25296 / base_1789839707_pid25296: func_8009EC04
+    # dispatches through static callback vector 0x803744B8. Crash r0=0x18
+    # selects slot 6 at 0x803744D0 = 0x8009F47C; same-PID neighbors publish
+    # 0x8009F5C8/0x8009F758/0x8009F790 coherently. CTR/r12 and architectural
+    # LR=0x8009ED2C match the indirect bctrl exactly. Ghidra HEADLESS/read-only
+    # proves predecessor ends at 0x8009F478 (blr); target owns standalone
+    # framed callback 0x8009F47C..0x8009F5C4; next callback starts 0x8009F5C8.
+    # Only this freshly encountered callback is rooted.
+    - 0x8009F47C
+    # Fresh post-FPS-fix PID30252 / base_1789837124_pid30252: func_80054FE4
+    # reads selector [r31+0x13E4], indexes the static callback table at
+    # 0x80372558, and bctrls through r12 with architectural LR 0x80055168.
+    # Same-PID crash has CTR/r12=0x800517B4. Ghidra HEADLESS proves predecessor
+    # ends independently at 0x800517B0 (blr); target owns the framed callback
+    # 0x800517B4..0x800519E4; next boundary starts at 0x800519E8. FindWordBytes
+    # finds the target in table slots 30/31 (0x803725D0/0x803725D4).
+    # Only the encountered callback entry is rooted.
+    - 0x800517B4
+    # Fresh final-FPS-build PID28820 / base_1789838059_pid28820: func_80054FE4
+    # reads selector [r31+0x13E4], indexes callback table 0x80372558, and
+    # bctrls through r12 with architectural LR 0x80055168. The fresh crash has
+    # CTR/r12=0x8004F0C4; selector*4 is 0x40, selecting slot 16 at 0x80372598.
+    # Ghidra HEADLESS/read-only proves predecessor 0x8004E95C ends independently
+    # at 0x8004F0C0 (blr); target owns 0x8004F0C4..0x8004F370; the next framed
+    # function starts at 0x8004F374. Static table also repeats this callback at
+    # slot 18 (0x803725A0). Only the freshly encountered callback is rooted.
+    - 0x8004F0C4
+    # Fresh canonical PID30044 / base_1789838478_pid30044: func_8012B4D4 reads
+    # selector byte 0x39 from [r5+4], remaps it through 0x8035F830 where
+    # [0x8035F914]=0x38, then indexes callback vector 0x803770A8. Slot +0xE0
+    # at 0x80377188 publishes 0x8012A1AC; crash CTR/r12 and architectural
+    # LR=0x8012B768 match the indirect bctrl exactly. Ghidra HEADLESS/read-only
+    # proves predecessor ends at 0x8012A1A8 (blr); target owns the standalone
+    # framed function 0x8012A1AC..0x8012A4DC; next function starts 0x8012A4E0.
+    # Only the freshly encountered callback is rooted.
+    - 0x8012A1AC
+    # Fresh canonical PID10304 / base_1789856430_pid10304: func_8012B4D4 saved
+    # selector 97 at object+0x2F4 (0x9234C164), remapped it through 0x8035F830
+    # at 0x8035F9B4 to callback index 90, then indexed vector 0x803770A8.
+    # Exact SAME-PID slot 0x80377210 publishes 0x8012A714; crash CTR/r12 and
+    # architectural LR=0x8012B768 match that bctrl. Neighbor vector slots 85..93
+    # coherently publish the same thunk, while 94..96 publish sibling 0x8012A718;
+    # no stomp evidence. Ghidra HEADLESS/read-only proves predecessor FUN_8012A640
+    # ends at 0x8012A710: blr; target 0x8012A714 is a standalone one-instruction
+    # tail thunk `b 0x801295F4`; next independent thunk is 0x8012A718.
+    # Only this freshly encountered thunk entry is rooted.
+    - 0x8012A714
+    # Fresh canonical PID816 / base_1789838677_pid816: func_80054FE4 leaves
+    # selector*4 in r0 as 0x38, so selector 14 indexes callback table base
+    # 0x80372558 at 0x80372590 -> 0x8004E588. Crash CTR/r12 and architectural
+    # LR=0x80055168 match this indirect bctrl exactly. Ghidra HEADLESS/read-only
+    # proves predecessor callback ends at 0x8004E584 (blr); target owns the
+    # standalone framed function 0x8004E588..0x8004E958; the already-known
+    # sibling callback 0x8004E95C begins immediately after it.
+    # Only the freshly encountered callback is rooted.
+    - 0x8004E588
+    # Fresh canonical PID29596 / base_1789838831_pid29596: func_80054FE4 leaves
+    # selector*4 in r0 as 0x50, so selector 20 indexes callback table base
+    # 0x80372558 at 0x803725A8 -> 0x8004F81C. Crash CTR/r12 and architectural
+    # LR=0x80055168 match this indirect bctrl exactly; same-PID neighboring slots
+    # publish coherent siblings 0x8004FA80/0x8004FE0C/0x8004FFD4. Ghidra
+    # HEADLESS/read-only proves predecessor ends at 0x8004F818 (blr); target owns
+    # the standalone framed function 0x8004F81C..0x8004FA7C; next function starts
+    # independently at 0x8004FA80. Only the freshly encountered callback is rooted.
+    - 0x8004F81C
+    # Fresh canonical PID29792 / base_1789840508_pid29792: func_80054FE4 reads
+    # same-PID selector [0x923431E0+0x13E4]=0x15 (21), so selector*4=0x54
+    # indexes callback table 0x80372558 at exact slot 0x803725AC -> 0x8004FA80.
+    # Crash r0=0x54, CTR/r12=0x8004FA80 and architectural LR=0x80055168
+    # match the indirect bctrl exactly. Ghidra HEADLESS/read-only proves the
+    # predecessor ends at 0x8004FA7C (blr); target owns standalone framed
+    # function 0x8004FA80..0x8004FE08; next boundary is 0x8004FE0C.
+    # Only this freshly encountered callback is rooted.
+    - 0x8004FA80
+    # Fresh canonical PID23568 / base_1789856047_pid23568: func_80054FE4 reads
+    # same-PID selector [0x923431E0+0x13E4]=25, so selector*4=0x64 indexes
+    # callback table 0x80372558 at exact slot 0x803725BC -> 0x800505A4.
+    # Crash r0=0x64, CTR/r12=0x800505A4 and architectural LR=0x80055168
+    # match that indirect bctrl exactly. SAME-PID neighboring slots are coherent:
+    # 24 -> 0x8005029C, 26 -> 0x80050D54, 27..29 -> 0x800512F8; no stomp evidence.
+    # HEADLESS raw PPC proves predecessor ends 0x800505A0: blr; target opens its
+    # own 0x90-byte frame at 0x800505A4 and closes it at 0x80050D50: blr.
+    # Ghidra's stored body truncates on paired-single decode, so raw HEADLESS is
+    # authoritative for the end. Next independent boundary 0x80050D54 opens a
+    # new frame. Real standalone range: 0x800505A4..0x80050D50. Only this root.
+    - 0x800505A4
+    # Fresh canonical PID11420 / base_1789848258_pid11420: func_80054FE4 reads
+    # same-PID selector [0x923431E0+0x13E4]=26, so selector*4=0x68 indexes
+    # callback table 0x80372558 at exact slot 0x803725C0 -> 0x80050D54.
+    # Crash r0=0x68, CTR/r12=0x80050D54 and architectural LR=0x80055168
+    # match that indirect bctrl exactly; neighbor slots are coherent callbacks
+    # (25 -> 0x800505A4, 27..29 -> 0x800512F8). HEADLESS raw disassembly proves
+    # predecessor epilogue ends 0x80050D50: blr and target opens its own 0x50-byte
+    # frame at 0x80050D54. Ghidra's stored body truncates at 0x80050D64 because
+    # this processor database does not decode the following paired-single opcode,
+    # so the body-object size is not authoritative here. Continuing HEADLESS raw
+    # PPC proves the same frame closes at 0x800512C4..0x800512F4 (FPR/GPR/LR
+    # restore, addi r1,+0x50, blr), and already-proven independent callback
+    # 0x800512F8 opens the next frame. Real standalone range: 0x80050D54..0x800512F4.
+    # Only this freshly encountered callback is rooted.
+    - 0x80050D54
+    # Fresh canonical PID27860 / base_1789841395_pid27860: func_80054FE4 reads
+    # same-PID state [0x92341140+0x13E4]=68, so selector*4=0x110 indexes callback
+    # table 0x80372558 at exact slot 0x80372668 -> 0x800B77A0. Crash r0=0x110,
+    # CTR/r12=0x800B77A0 and architectural LR=0x80055168 match the bctrl exactly;
+    # neighboring table entries are coherent function pointers. Ghidra
+    # HEADLESS/read-only proves predecessor ends at 0x800B779C (blr); target owns
+    # standalone framed function 0x800B77A0..0x800B7C08; next boundary is
+    # 0x800B7C0C. Only this freshly encountered callback is rooted.
+    - 0x800B77A0
+    # Fresh canonical PID26324 / base_1789844990_pid26324: func_80054FE4 reads
+    # same-PID selector [0x92341140+0x13E4]=58, so selector*4=0xE8 indexes
+    # callback table 0x80372558 at exact slot 0x80372640 -> 0x80083930.
+    # Crash r0=0xE8, CTR/r12=0x80083930 and architectural LR=0x80055168 match
+    # that indirect bctrl exactly; neighboring slots publish coherent callbacks.
+    # Ghidra HEADLESS/read-only proves predecessor ends at 0x8008392C (blr);
+    # target owns standalone framed function 0x80083930..0x80083A48; next
+    # independent framed boundary begins at 0x80083A4C. Only this callback is rooted.
+    - 0x80083930
+    # Fresh canonical PID7836 / base_1789838976_pid7836: func_8012B4D4 reads
+    # selector byte 0x15 from [r5+4], remaps it through 0x8035F830 where
+    # [0x8035F884]=0x15, then indexes callback vector 0x803770A8. Final offset
+    # 0x54 selects slot 0x803770FC = 0x80127CB0; crash CTR/r12 and architectural
+    # LR=0x8012B768 match the indirect bctrl exactly. Ghidra HEADLESS/read-only
+    # proves predecessor ends at 0x80127CAC (blr); target owns the standalone
+    # framed function 0x80127CB0..0x80127CF0; next function starts at 0x80127CF4.
+    # Only the freshly encountered callback is rooted.
+    - 0x80127CB0
+    # Fresh canonical PID26204 / base_1789839151_pid26204: func_80054FE4 leaves
+    # selector*4 in r0 as 0x74, so selector 29 indexes callback table base
+    # 0x80372558 at 0x803725CC -> 0x800512F8. Crash CTR/r12 and architectural
+    # LR=0x80055168 match this indirect bctrl exactly. Ghidra HEADLESS/read-only
+    # proves predecessor ends at 0x800512F4 (blr); target owns the standalone
+    # framed callback 0x800512F8..0x800517B0; the already-promoted sibling
+    # 0x800517B4 starts immediately after it. Only this fresh callback is rooted.
+    - 0x800512F8
+    # Fresh FPS-validation PID19188 / base_1789834980_pid19188: func_8009EDE0
+    # indexes the static callback vector rooted at 0x803744F8; the selected slot
+    # published 0x8009FDFC and the indirect bctrl returned to architectural
+    # LR 0x8009EEC0, exactly matching crash CTR/r12. Ghidra HEADLESS proves a
+    # clean standalone framed callback: predecessor leaf returns at 0x8009FDF8,
+    # target owns 0x8009FDFC..0x8009FF04, and the next function starts at
+    # 0x8009FF08. Only the encountered slot is rooted.
+    - 0x8009FDFC
+    # Fresh clip-diagnostic PID21392 / base_1789839432_pid21392: func_8009EDE0
+    # dispatches through the same static callback vector 0x803744F8. Crash r0
+    # is 0x0C, selecting slot 3 at 0x80374504 = 0x800A0084; CTR/r12 and
+    # architectural LR=0x8009EEC0 match exactly. Ghidra HEADLESS/read-only
+    # proves predecessor ends at 0x800A0080 (blr); target owns standalone
+    # framed callback 0x800A0084..0x800A00D4; next callback starts 0x800A00D8.
+    # Only the freshly encountered callback is rooted.
+    - 0x800A0084
+    # Fresh canonical PID8748 / base_1789839578_pid8748: func_8009EDE0 again
+    # dispatches through static callback vector 0x803744F8. Crash r0=0x30
+    # selects slot 12 at 0x80374528 = 0x800A05C4; same-PID neighbors publish
+    # 0x800A06E4/0x800A0724/0x800A09BC coherently. CTR/r12 and architectural
+    # LR=0x8009EEC0 match exactly. Ghidra HEADLESS/read-only proves target owns
+    # standalone framed callback 0x800A05C4..0x800A06E0; next callback starts
+    # independently at 0x800A06E4. Only this freshly encountered callback is rooted.
+    - 0x800A05C4
+    # Fresh 8C749 PID27836 / base_1789833717_pid27836: func_800C6C1C reads
+    # the 24-byte callback descriptor selected by record index 1 and tail-bctr's
+    # through descriptor +0x10. Same-PID dumps give descriptor 0x80374D48 and
+    # [0x80374D58]=0x800DEA60; crash CTR/r12=0x800DEA60 and LR=0x8014AB80
+    # match the tail callback exactly. Ghidra HEADLESS proves 0x800DEA0C ends
+    # independently at 0x800DEA5C; target owns a fresh 0x10-byte frame from
+    # 0x800DEA60 through 0x800DEAA4 blr; next framed function is 0x800DEAA8.
+    # Only the encountered sibling callback entry is rooted.
+    - 0x800DEA60
+    # Fresh canonical PID23072 / base_1789857200_pid23072: func_800F4C10 passes
+    # descriptor 0x80376A60 into func_8006AE2C; that dispatcher loads callback
+    # slot +0x04 and bctrls with architectural LR 0x8006AEC8. SAME-PID MEM1
+    # proves exact slot 0x80376A64 = 0x800F4E8C; neighboring descriptor entries
+    # are coherent code pointers (0x800F5738, 0x800F4E90, 0x800F574C,
+    # 0x800F5750, 0x800F58CC), so there is no stomp evidence. Ghidra
+    # HEADLESS/read-only proves the predecessor returns at 0x800F4E88; target
+    # 0x800F4E8C is a standalone one-instruction tail thunk `b 0x800F5750`;
+    # 0x800F4E90 is the next independent BLR callback and 0x800F4E94 opens a
+    # separate framed body. Only the freshly encountered callback is rooted.
+    - 0x800F4E8C
+    # Fresh canonical PID2504 / base_1789858293_pid2504: func_80054FE4 reads
+    # SAME-PID current state [0x923431E0+0x13E4]=55 with pending +0x13E8=-1,
+    # scales selector*4 to 0xDC (matching crash r0), and indexes callback table
+    # 0x80372558 at exact slot 0x80372634 = 0x80082EB0. Crash CTR/r12 and
+    # architectural LR=0x80055168 match that indirect bctrl exactly. Neighbor
+    # slots publish coherent callbacks (0x80082C40, 0x80083334, 0x8008380C,
+    # 0x80083930, ...), so there is no stomp evidence. Ghidra HEADLESS/read-only
+    # raw disassembly proves predecessor ends at 0x80082EAC (blr); target opens
+    # its own aligned 0x40-byte frame at 0x80082EB0, restores that frame and
+    # returns at 0x80083330 (blr); next independent framed callback starts at
+    # 0x80083334. Only the freshly encountered callback is rooted.
+    - 0x80082EB0
+    # Fresh canonical PID22208 / base_1789858565_pid22208: func_8009EDE0 reads
+    # the signed selector byte, scales it by four and indexes callback vector
+    # 0x803744F8. Crash r0=0x2C selects index 11, exact SAME-PID slot
+    # 0x80374524=0x800A05A0; neighboring slots publish coherent callbacks
+    # 0x800A0540 / 0x800A05C4 / 0x800A06E4 / 0x800A0724. CTR/r12 and
+    # architectural LR=0x8009EEC0 match the indirect bctrl exactly; no stomp.
+    # Ghidra HEADLESS/read-only proves predecessor ends 0x800A059C (blr);
+    # target is standalone leaf 0x800A05A0..0x800A05C0 with independent return
+    # paths, and the already-known framed callback 0x800A05C4 starts next.
+    # Only this freshly encountered callback is rooted.
+    - 0x800A05A0
+    # Fresh canonical PID9116 / base_1789858717_pid9116: live object
+    # 0x925EE3C0 stores descriptor 0x803788A0 at +0x28. func_8006AE2C loads
+    # descriptor slot +0x04; SAME-PID MEM1 exact 0x803788A4=0x80183EA8,
+    # matching crash CTR/r12 and architectural LR=0x8006AEC8. Neighbor fields
+    # are coherent callbacks (0x80183FAC, 0x80183FA0, 0x80183FA8,
+    # 0x80184160, ...), so no stomp is indicated. Although the runtime's
+    # provisional label reports func_80183EA4+4, Ghidra HEADLESS/read-only
+    # proves 0x80183EA4 is an independent one-instruction `blr`; 0x80183EA8
+    # immediately opens its own aligned 0x30-byte frame and returns at
+    # 0x80183F9C. Next independent entries begin at 0x80183FA0/0x80183FA8.
+    # Only the freshly published callback entry 0x80183EA8 is rooted.
+    - 0x80183EA8
+    # Fresh canonical PID3040 / base_1789858914_pid3040: func_80054FE4 reads
+    # SAME-PID current state [0x923431E0+0x13E4]=17 with pending +0x13E8=-1;
+    # selector*4 is 0x44, exactly matching crash r0, and callback table base
+    # 0x80372558 therefore selects exact slot 0x8037259C=0x8004F374.
+    # Slots 16/18 both publish the already-known 0x8004F0C4 while 17/19 both
+    # legitimately publish 0x8004F374; later neighbors 0x8004F81C/0x8004FA80
+    # are coherent callbacks, so there is no stomp evidence. Crash CTR/r12 and
+    # architectural LR=0x80055168 match the indirect bctrl exactly. Ghidra
+    # HEADLESS/read-only proves predecessor 0x8004F0C4 returns at 0x8004F370;
+    # target opens its own 0x40-byte frame at 0x8004F374, restores it and ends
+    # at 0x8004F818 (blr); next independent framed callback starts 0x8004F81C.
+    # Only the freshly encountered callback is rooted.
+    - 0x8004F374
+    # Fresh canonical PID19496 / base_1789859116_pid19496: func_8009EDE0
+    # dispatches through callback vector 0x803744F8. Crash r0=0x20 selects
+    # index 8, and SAME-PID MEM1 exact slot 0x80374518=0x800A037C; neighboring
+    # entries 0x800A02A0/0x800A04A0/0x800A0540/0x800A05A0 are coherent
+    # callbacks, so there is no stomp evidence. Crash CTR/r12 and architectural
+    # LR=0x8009EEC0 match the indirect bctrl exactly. Ghidra HEADLESS/read-only
+    # proves predecessor ends at 0x800A0378 (blr); target opens its own 0x30-byte
+    # frame at 0x800A037C and returns at 0x800A049C (blr); next independent
+    # framed callback begins at 0x800A04A0. Only this fresh callback is rooted.
+    - 0x800A037C
+    # Fresh canonical PID20544 / base_1789859263_pid20544: live object
+    # 0x925C3760 stores descriptor 0x80378588 at +0x28. func_8006A740 loads
+    # descriptor slot +0x0C before its indirect bctrl, and SAME-PID MEM1 exact
+    # 0x80378594=0x8016F8C4, matching crash CTR/r12 and architectural
+    # LR=0x8006A7CC. Neighbor slots publish coherent callbacks 0x8016F79C,
+    # 0x8016F478, 0x8016F750, 0x8016F938, 0x8016F98C; no stomp evidence.
+    # Ghidra HEADLESS/read-only proves predecessor returns at 0x8016F8C0;
+    # target opens its own 0x10-byte frame at 0x8016F8C4 and returns at
+    # 0x8016F934 (blr); next independent framed callback starts 0x8016F938.
+    # Only the freshly encountered callback is rooted.
+    - 0x8016F8C4
+    # Fresh canonical PID23240 / base_1789859445_pid23240: live object
+    # 0x926246A0 stores descriptor 0x80378558 at +0x28. func_8006A740 loads
+    # descriptor slot +0x0C before bctrl; SAME-PID MEM1 exact slot
+    # 0x80378564=0x8016E9E4 matches crash CTR/r12 and architectural
+    # LR=0x8006A7CC. Neighbor entries 0x8016E714/0x8016E260/0x8016E6CC/
+    # 0x8016E9E8/0x8016E9EC are coherent callbacks; no stomp evidence.
+    # Ghidra HEADLESS/read-only proves predecessor returns at 0x8016E9E0;
+    # target 0x8016E9E4 is its own one-instruction `blr` callback, and next
+    # independent entry 0x8016E9E8 tail-branches to 0x8006B1EC.
+    # Only the freshly encountered callback is rooted.
+    - 0x8016E9E4
+    # Fresh canonical PID6032 / base_1789861071_pid6032: live node
+    # 0x925C3760 stores descriptor 0x80378588 at +0x28. In func_8006A948's
+    # second traversal, the dispatcher loads callback slot +0x14 and bctrls
+    # with architectural LR 0x8006A9EC. SAME-PID MEM1 exact slot
+    # 0x8037859C=0x8016F98C matches crash CTR/r12; neighboring descriptor slots
+    # publish coherent callbacks 0x8016F79C/0x8016F478/0x8016F750/0x8016F8C4/
+    # 0x8016F938, so there is no stomp evidence. Ghidra HEADLESS/read-only
+    # proves predecessor FUN_8016F938 returns at 0x8016F988; target 0x8016F98C
+    # is a standalone one-instruction `blr`; next independent framed function
+    # starts at 0x8016F990. Only this freshly encountered callback is rooted.
+    - 0x8016F98C
+    # Fresh post-function-map NORMAL PID11824 / base_1789873862_pid11824:
+    # descriptor 0x90D10ECC publishes selector byte 101 at +4 and object
+    # 0x9234BE70 stores the same selector at +0x2F4. Retail func_8012B4D4
+    # indexes word table 0x8035F830[101] -> 94, then callback vector
+    # 0x803770A8[94] -> 0x8012A718; neighboring slots are coherent thunks.
+    # Ghidra HEADLESS/read-only proves predecessor 0x8012A714 is a distinct
+    # tail thunk, target 0x8012A718 is its own tail thunk to 0x80129810, and
+    # the next independent dispatcher starts at 0x8012A71C. Runtime-proven
+    # publication makes this a hard root; no neighboring tiny thunk is rooted.
+    - 0x8012A718
+    # Fresh NORMAL PID24796 / base_1789874226_pid24796 after the bulk map:
+    # func_801478D8 indexes callback table 0x803778E0 by object+8; SAME-PID
+    # snapshot has object 0x9234BE98 +8 = 2 and table[2] @ 0x803778E8 =
+    # 0x80147738, with coherent neighboring callback entries. HEADLESS proves
+    # the previous routine returns at 0x80147734 and target opens its own 0x30
+    # byte LR frame. Ghidra truncates its Function body at an undecoded Gekko
+    # paired-single instruction, but read-only disassembly proves the matching
+    # epilogue through 0x801478C4 blr and next independent entry 0x801478C8.
+    # A temporary translator probe with allow_unsupported_instructions=false
+    # translated the complete target as non-interior, so this runtime-published
+    # callback is promoted alone; no neighboring table entry is guessed.
+    - 0x80147738
+    # Fresh NORMAL PID18156 / base_1789874736_pid18156, no input sent before
+    # the blocker: func_8006A740 loads node+0x28 -> descriptor 0x803792C0,
+    # then dispatches descriptor+0x0C. SAME-PID MEM1 has
+    # 0x803792CC = 0x801AAD60. HEADLESS proves the previous routine returns
+    # at 0x801AAD5C, target owns a 0x10-byte LR frame and returns at
+    # 0x801AAD7C, with a distinct tail thunk beginning at 0x801AAD80.
+    # This is an exact runtime-published standalone callback, not an interior.
+    - 0x801AAD60
+    # Fresh NORMAL PID17996 / base_1789875234_pid17996: func_8006B1FC
+    # dispatches node+0x28 descriptor slot +0x08. SAME-PID node 0x925EE3C0
+    # points to descriptor 0x803788A0 and MEM1 has 0x803788A8=0x80183FA0.
+    # HEADLESS proves the previous framed routine returns at 0x80183F9C and
+    # target is an independent two-instruction tail thunk (lwz; b 0x80067E70),
+    # followed by another distinct tail thunk at 0x80183FA8.
+    - 0x80183FA0
+    # Fresh NORMAL PID2836 / base_1789875636_pid2836: func_8006AEF0
+    # stores the passed descriptor in node+0x28 and dispatches descriptor+0x04.
+    # SAME-PID node 0x92585960 has +0x28=0x80378838, and MEM1
+    # 0x8037883C=0x801815B8 (the only MEM1 publication of the target).
+    # HEADLESS proves the previous routine returns at 0x801815B4 and target
+    # starts its own aligned 0x150-byte frame. Its paired-single save/restore
+    # sequence is partially undecoded by Ghidra, but the epilogue returns at
+    # 0x80181A00 and the next independent mapped function starts at 0x80181A04.
+    # An isolated translator probe with allow_unsupported_instructions=false
+    # translated the target as non-interior with all internal labels <0x80181A04.
+    - 0x801815B8
+    # Fresh NORMAL PID22980 / base_1789876202_pid22980: func_8009EC04
+    # dispatches table 0x803744B8 indexed by r27. SAME-PID r27=4 selects
+    # slot 0x803744C8=0x8009F394. HEADLESS proves previous routine returns at
+    # 0x8009F390, target owns 0x8009F394..0x8009F3EC and returns with blr,
+    # while the next independent framed function starts at 0x8009F3F0.
+    - 0x8009F394
+    # Fresh NORMAL PID9288 / base_1789877098_pid9288: func_8006A690
+    # loads node+0x28 and dispatches descriptor+0x00. SAME-PID r4 points to
+    # descriptor 0x80378760 and MEM1 has 0x80378760=0x801788B0 exactly.
+    # HEADLESS proves previous function 0x801786E4 returns at 0x801788AC;
+    # target opens its own 0x40-byte frame and returns at 0x80178C38, with
+    # the next independent leaf beginning at 0x80178C3C. Ghidra truncates
+    # only at a paired-single opcode inside the frame, not at the boundary.
+    - 0x801788B0
+    # Fresh NORMAL PID3736 / base_1789877394_pid3736: func_8012B4D4
+    # indirectly dispatches 0x80129FF4. The semantic callback table
+    # 0x803770A8 publishes this exact target in four slots
+    # (0x80377180/84 and 0x803771F4/F8). Read-only boundary audit proves the
+    # predecessor 0x80129FF0 is an unconditional terminal branch and the
+    # target is independently bounded by current entry 0x8012A1AC, whose
+    # immediately preceding instruction 0x8012A1A8 is blr. Runtime+table
+    # publication makes this a hard root; neighboring residuals stay map-only.
+    - 0x80129FF4
+    # Fresh NORMAL PID17532 / base_1789877680_pid17532: func_8006A948
+    # dispatches node descriptor slot +0x14. The node is the same object family
+    # backed by descriptor 0x803792C0, where +0x14 publishes 0x801AAD84.
+    # HEADLESS proves 0x801AAD80 is a distinct preceding tail thunk, target
+    # owns its own 0x20-byte frame through 0x801AAE14 blr, and the next
+    # independent framed function begins at 0x801AAE18. An isolated translator
+    # probe with allow_unsupported_instructions=false translated the target as
+    # non-interior, so this exact runtime-published callback is a hard root.
+    - 0x801AAD84
+    # Fresh NORMAL PID21844 / base_1789878101_pid21844: func_8006A690
+    # dispatches descriptor+0x00; SAME-PID r4=0x80378498 and MEM1
+    # 0x80378498=0x801650EC. HEADLESS proves the preceding callback
+    # 0x801650DC is a distinct tail thunk ending at 0x801650E8, target opens
+    # its own aligned 0x40-byte frame and returns at 0x801652A0, and the next
+    # independent framed function begins at 0x801652A4. Runtime publication
+    # plus exact standalone boundaries make this a hard root with no bypass.
+    - 0x801650EC
+    # Fresh NORMAL PID5484 / base_1789878494_pid5484: func_8006A740
+    # dispatches descriptor slot +0x0C. SAME-PID node 0x92639C20 has +0x28
+    # = 0x803784F8, and MEM1 0x80378504 (descriptor+0x0C) contains exactly
+    # 0x80168F34. HEADLESS proves the preceding routine returns at 0x80168F30;
+    # the target is a standalone one-instruction `blr`; the next independent
+    # tail thunk is 0x80168F38 and the next framed function starts 0x80168F3C.
+    # Runtime publication plus exact no-fallthrough boundaries make this a hard
+    # root; the sibling 0x80168F38 remains map-only.
+    - 0x80168F34
+    # Fresh NORMAL PID6076 / base_1789879624_pid6076 reached this callback
+    # without any F11/F12 input. func_8006A740 dispatches descriptor +0x0C;
+    # SAME-PID node 0x9267FC20 has +0x28=0x80378790 and MEM1 slot
+    # 0x8037879C contains exactly 0x8017E194 (unique MEM1 publication).
+    # HEADLESS proves 0x8017E190 is a terminal blr, target 0x8017E194 is its
+    # own one-instruction blr leaf, 0x8017E198 is a distinct tail thunk, and
+    # the framed 0x8017E19C entry follows independently. Runtime publication
+    # plus exact no-fallthrough boundaries make only this target a hard root.
+    - 0x8017E194
+    # Fresh NORMAL PID25004 / base_1789880038_pid25004 reached this callback
+    # after 105 exact-HWND F11/F12 bursts; the safety loop stopped immediately
+    # on crash_missing_target.txt. func_8006A948 dispatches descriptor +0x14;
+    # SAME-PID node 0x92585960 has +0x28=0x80378808 and MEM1 slot 0x8037881C
+    # contains 0x80180840. HEADLESS proves predecessor 0x8018083C is terminal
+    # blr and target is a standalone aligned-stack function 0x80180840..0x80180A60
+    # with its own blr epilogue. Next independent boundary is 0x80180A64.
+    # Runtime publication + exact boundary proof make this a hard root.
+    - 0x80180840
+    # Fresh NORMAL PID15464 / base_1789880623_pid15464 reached this callback
+    # without any F11/F12 input. func_8006A690 dispatches descriptor slot +0;
+    # SAME-PID node 0x926CA6C0 has +0x28=0x80372E20 and MEM1 0x80372E20
+    # contains 0x800662E8. HEADLESS proves predecessor 0x800662E4 is a terminal
+    # standalone blr, target 0x800662E8 is its own one-instruction blr leaf,
+    # and the next independent boundary is translated/map-covered 0x800662EC.
+    # Runtime publication plus exact no-fallthrough boundaries make this hard.
+    - 0x800662E8
+    # Fresh NORMAL PID6164 / base_1789881482_pid6164 reached this callback
+    # after 30 exact-HWND F11/F12 bursts; the safety loop stopped immediately
+    # on crash_missing_target.txt. func_8006A948 loads callback descriptor+0x14;
+    # SAME-PID node 0x9270BCE0 has +0x28=0x803784C8 and MEM1 0x803784DC
+    # uniquely contains 0x80165AEC. HEADLESS proves predecessor 0x80165AE8 is
+    # terminal blr, target 0x80165AEC is a standalone one-instruction blr leaf,
+    # and the next independent boundary is 0x80165AF0. Runtime publication plus
+    # exact boundaries make only this target a hard root.
+    - 0x80165AEC
+    # Fresh NORMAL PID16632 / base_1789881975_pid16632 reached this callback
+    # after 119 cumulative exact-HWND F11/F12 bursts; the safety loop stopped
+    # immediately on crash_missing_target.txt. In func_8006A948's first indirect
+    # call, SAME-PID r29=0x926FD3E0 has +0x28=0x80378468 and descriptor+0x14
+    # @0x8037847C uniquely contains 0x80164A8C. HEADLESS proves predecessor
+    # FUN_80164A14 ends at 0x80164A88 blr; target 0x80164A8C is its own one-
+    # instruction blr leaf; next independent boundary is framed 0x80164A90.
+    # Runtime publication plus exact no-fallthrough boundaries make this hard.
+    - 0x80164A8C
+    # Fresh NORMAL PID19800 / base_1789882334_pid19800 reached this callback
+    # after 44 exact-HWND F11/F12 bursts; the safety loop stopped immediately
+    # on crash_missing_target.txt. func_8006A740's second indirect call uses
+    # descriptor=[r31+0x28], callback=[descriptor+0x0C]. SAME-PID r31=0x9258DA00
+    # -> descriptor 0x80378310; slot 0x8037831C uniquely publishes 0x80160990.
+    # HEADLESS owns exact function 0x80160990..0x801609AF ending 0x801609AC blr;
+    # predecessor 0x801606B0 ends at 0x8016098C blr; next boundary 0x801609B0.
+    # Runtime publication plus exact standalone boundaries make this hard.
+    - 0x80160990
+    # Fresh NORMAL PID1548 / base_1789882732_pid1548 reached this callback
+    # after 53 exact-HWND F11/F12 bursts; the safety loop stopped immediately
+    # on crash_missing_target.txt. func_8006A690 loads callback from descriptor+0;
+    # SAME-PID descriptor r4=0x803787F0 uniquely publishes 0x80180264 at +0.
+    # HEADLESS proves predecessor 0x80180260 is a terminal tail thunk, target
+    # is standalone 0x80180264..0x80180498 ending blr, and next independent
+    # boundary is 0x8018049C. Runtime publication + exact boundaries make hard.
+    - 0x80180264
+    # Fresh NORMAL PID21976 / base_1789883120_pid21976 reached this callback
+    # through func_800A711C at architectural LR 0x800A71D0. That caller copies
+    # the seven-word retail callback table at 0x8035C9E0 to its stack and uses
+    # [object+0x70] as the selector. SAME-PID object 0x92574DC0 has selector 0,
+    # and MEM1 slot 0x8035C9E0 contains 0x800A7004. HEADLESS proves the previous
+    # routine returns at 0x800A7000, target owns standalone aligned-stack body
+    # 0x800A7004..0x800A70A0 ending blr, and 0x800A70A4 is the next independent
+    # translated function. Runtime publication plus exact boundaries make hard.
+    - 0x800A7004
+    # Fresh NORMAL PID6712 / base_1789884291_pid6712 crossed 0x800A7004 then
+    # stopped on the next retail callback at LR 0x800A78DC. func_800A7818 copies
+    # the seven-word table at 0x8035CA00 to its stack and indexes it with
+    # [object+0x70]. SAME-PID object 0x92574DC0 has selector 0 and MEM1
+    # 0x8035CA00 contains 0x800A7210. HEADLESS/manual paired-single disassembly
+    # proves predecessor 0x800A720C blr, target owns 0x800A7210..0x800A73CC
+    # ending blr, and next independent boundary is 0x800A73D0. Hard root only.
+    - 0x800A7210
+    # Fresh NORMAL PID24528 / base_1789884652_pid24528 crossed the 0x800A7210
+    # callback family, then func_8006B1FC stopped at LR 0x8006B238 after loading
+    # descriptor 0x80378790 +0x08. SAME-PID MEM1 contains 0x8017DADC exactly at
+    # 0x80378798. HEADLESS proves predecessor 0x8017DAD8 blr, standalone target
+    # 0x8017DADC..0x8017DAE8 ending blr, and independent next function 0x8017DAEC.
+    # Runtime publication plus exact boundaries make this a hard root.
+    - 0x8017DADC
+    # Fresh NORMAL PID8596 / base_1789884994_pid8596 crossed 0x8017DADC, then
+    # func_8006B1FC stopped at LR 0x8006B238 after loading descriptor 0x803784F8
+    # +0x08. SAME-PID MEM1 0x80378500 = 0x80168B64. HEADLESS proves predecessor
+    # 0x80168B60 blr, standalone body 0x80168B64..0x80168C1C ending blr, and
+    # independent next function 0x80168C20. Runtime publication makes hard.
+    - 0x80168B64
+    # Fresh NORMAL PID13572 / base_1789885309_pid13572 crossed 0x80168B64 and
+    # later stopped in func_8006A740 at LR 0x8006A7CC. That caller loads the
+    # callback from descriptor +0x0C; SAME-PID descriptor 0x80378958 publishes
+    # 0x801874BC at 0x80378964. HEADLESS proves predecessor 0x801874B8 blr,
+    # target is standalone single-instruction blr, and next boundary 0x801874C0
+    # is an independent tail thunk. Runtime publication makes this a hard root.
+    - 0x801874BC
+    # Fresh NORMAL PID16560 / base_1789886093_pid16560 crossed 0x801874BC and
+    # stopped in func_8006B1FC at architectural LR 0x8006B238. That caller loads
+    # callback from descriptor +0x08; SAME-PID r4=0x80378958 and MEM1 slot
+    # 0x80378960 contains 0x80186DC8. HEADLESS proves predecessor 0x80186DC4
+    # is terminal blr, target is standalone 0x80186DC8..0x80186DFC ending blr,
+    # and 0x80186E00 is the next independent translated function. Runtime
+    # publication plus exact no-fallthrough boundaries make this a hard root.
+    - 0x80186DC8
+    # Fresh NORMAL PID23668 / base_1789886441_pid23668 crossed 0x80186DC8 and
+    # stopped in func_8006A948's second callback traversal at LR 0x8006A9EC.
+    # SAME-PID node 0x92585960 has +0x28=0x80378820; that descriptor's +0x14
+    # slot at 0x80378834 contains 0x80181314. HEADLESS/manual paired-single
+    # disassembly proves predecessor 0x80181310 blr, target standalone
+    # 0x80181314..0x801815B4 ending blr, and next independent hard-root boundary
+    # 0x801815B8. Runtime publication plus exact boundaries make this hard.
+    - 0x80181314
+    # Fresh NORMAL PID1056 / base_1789886717_pid1056 crossed 0x80181314 and
+    # later stopped in func_8006A690 at architectural LR 0x8006A6DC. That caller
+    # loads callback from descriptor +0; SAME-PID r4=0x80377520 and MEM1
+    # 0x80377520 contains 0x80132278. HEADLESS proves predecessor 0x80132274 blr,
+    # target standalone 0x80132278..0x8013278C ending blr, and next independent
+    # boundary 0x80132790. Runtime publication plus exact boundaries make hard.
+    - 0x80132278
+    # Fresh NORMAL PID4312 / base_1789887046_pid4312 crossed 0x80132278 and
+    # later stopped in func_8006A740 at architectural LR 0x8006A784. SAME-PID
+    # node 0x926D93E0 has +0x28=0x80377520; that descriptor's +0x0C slot at
+    # 0x8037752C contains 0x80132790. HEADLESS proves predecessor 0x8013278C
+    # is terminal blr, target standalone 0x80132790..0x801328C4 ending blr,
+    # and next independent/map-covered boundary 0x801328C8. Runtime publication
+    # plus exact no-fallthrough boundaries make this a hard root.
+    - 0x80132790
+    # Fresh NORMAL PID18284 / base_1789887559_pid18284 crossed 0x80132790 and
+    # later stopped in func_8006A690 at architectural LR 0x8006A6DC. The caller
+    # loads callback from descriptor +0; SAME-PID r3/r30=0x9270F4C0 has +0x28
+    # =0x80379320 and MEM1 slot 0x80379320 contains exactly 0x801AE76C.
+    # HEADLESS proves predecessor 0x801AE768 is terminal blr, target owns a fresh
+    # aligned-stack body 0x801AE76C..0x801AE978 ending blr, and the next
+    # independent boundary is 0x801AE97C. Runtime publication plus exact
+    # no-fallthrough boundaries make this a hard root.
+    - 0x801AE76C
+    # Fresh NORMAL PID11416 / base_1789888851_pid11416 crossed 0x801AE76C and
+    # stopped in func_8006A948's first callback traversal at LR 0x8006A998.
+    # SAME-PID node 0x926D93E0 has +0x28=0x80377520; func_8006A948 loads
+    # descriptor+0x14 there, and MEM1 slot 0x80377534 contains 0x8013291C.
+    # HEADLESS proves predecessor 0x80132918 is terminal blr, target 0x8013291C
+    # is its own one-instruction blr leaf, and the next independent framed
+    # function starts at 0x80132920. Runtime publication plus exact boundaries
+    # make this a hard root without altering guest behavior.
+    - 0x8013291C
+    # Fresh NORMAL PID4040 / base_1789889237_pid4040 crossed 0x8013291C and
+    # stopped in func_8006B1FC at LR 0x8006B238. SAME-PID node 0x926B09A0 has
+    # +0x28=0x80372E68; that caller loads descriptor+0x08 and MEM1 0x80372E70
+    # contains exactly 0x800666C4. HEADLESS proves predecessor 0x800666C0 is
+    # terminal blr, target 0x800666C4 is its own one-instruction blr leaf, and
+    # next independent framed function starts 0x800666C8. Runtime publication
+    # plus exact no-fallthrough boundaries make this a hard root.
+    - 0x800666C4
+    # Fresh NORMAL PID25488 / base_1789889539_pid25488 crossed 0x800666C4 and
+    # stopped in func_8006B1FC at LR 0x8006B238. SAME-PID node 0x92686260 has
+    # +0x28=0x80378528; caller loads descriptor+0x08 and MEM1 0x80378530 holds
+    # exactly 0x80169CC4. HEADLESS proves predecessor 0x80169CC0 is terminal
+    # blr, target 0x80169CC4..0x80169CD0 is a standalone helper ending in an
+    # unconditional tail branch to 0x8000443C, and next framed function starts
+    # at 0x80169CD4. Runtime publication plus exact boundaries make this hard.
+    - 0x80169CC4
+    # Fresh NORMAL PID22376 / base_1789889932_pid22376 crossed 0x80169CC4 and
+    # stopped in func_8006AE2C at LR 0x8006AEC8. Its caller passes descriptor
+    # 0x80377CE8 as r4; func_8006AE2C loads callback from r4+4 and SAME-PID
+    # MEM1 0x80377CEC contains exactly 0x8014D01C. HEADLESS proves predecessor
+    # 0x8014D018 is terminal blr, target owns standalone framed body
+    # 0x8014D01C..0x8014D184 ending blr, and next function starts 0x8014D188.
+    # Runtime publication plus exact boundaries make this a hard root.
+    - 0x8014D01C
+    # Fresh NORMAL PID19724 / base_1789890385_pid19724 crossed 0x8014D01C and
+    # stopped in func_8006AEF0 at architectural LR 0x8006B038. SAME-PID node
+    # 0x92585B60 stores descriptor 0x803787C0 at +0x28; func_8006AEF0 loads the
+    # callback from descriptor+0x04, and MEM1 0x803787C4 uniquely contains
+    # 0x8017F2C4. HEADLESS proves predecessor 0x8017F2C0 is terminal blr,
+    # target owns a fresh aligned 0xE0-byte frame from 0x8017F2C4 through the
+    # epilogue ending 0x8017F6D0 blr, and the next independent framed function
+    # begins at 0x8017F6D4. Runtime publication plus exact boundaries make hard.
+    - 0x8017F2C4
+  allow_unsupported_instructions: false
+  enable_state_free_abi: false
+  discover_v_table_functions: false
+  discover_static_callbacks: false
+
+runtime:
+  # Generic DOL projects should own CRT/bootstrap through the translated entry.
+  generic_dol_boot: true
+
+  # IMPORTANT: this is the title-address boundary. Never point a new project at
+  # another game's runtime_native directory or at legacy MKW address overrides.
+  native_registration_root: "projects/meteor/runtime_native"
+  native_abi_directories: []
+
+output:
+  root: build/meteor/generated
+  functions: functions
+  runtime_config: RuntimeConfig.h
+  data_initializer: data_sections_init.cpp
+  base_manifest: ../base/meteor_base_manifest.json
+
+
+
+
+
+
+
+
+

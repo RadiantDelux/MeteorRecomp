@@ -1,0 +1,126 @@
+name: Build
+
+on:
+  push:
+    branches: [main, 'consolidation/**']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  translator:
+    name: Translator (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Restore
+        run: dotnet restore translator/Translator.sln
+
+      - name: Build
+        run: dotnet build translator/Translator.sln -c Release --no-restore
+
+      - name: Test
+        run: dotnet test translator/Translator.sln -c Release --no-build --verbosity normal
+
+  runtime-contracts:
+    name: Runtime contracts (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Install LLVM-MinGW on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $archive = Join-Path $env:RUNNER_TEMP 'llvm-mingw.zip'
+          Invoke-WebRequest 'https://github.com/mstorsjo/llvm-mingw/releases/download/20260826/llvm-mingw-20260826-ucrt-x86_64.zip' -OutFile $archive -MaximumRetryCount 3 -RetryIntervalSec 10
+          if ((Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant() -ne 'ae601f4e0f72bbdf441ad2df8bb16f037e2e9251559ea6b37b4057aef39c06c3') {
+            throw 'LLVM-MinGW archive checksum mismatch'
+          }
+          Expand-Archive -LiteralPath $archive -DestinationPath $env:RUNNER_TEMP
+          $compilerBin = Join-Path $env:RUNNER_TEMP 'llvm-mingw-20260826-ucrt-x86_64/bin'
+          "CC=$compilerBin/clang.exe" >> $env:GITHUB_ENV
+          "CXX=$compilerBin/clang++.exe" >> $env:GITHUB_ENV
+          $compilerBin >> $env:GITHUB_PATH
+
+      - name: Select Clang on Linux
+        if: runner.os == 'Linux'
+        run: |
+          echo 'CC=clang' >> "$GITHUB_ENV"
+          echo 'CXX=clang++' >> "$GITHUB_ENV"
+
+      - name: Configure without game data or graphics dependencies
+        run: cmake -S runtime/tests -B build/contracts -G Ninja -DCMAKE_BUILD_TYPE=Release
+      - name: Build
+        run: cmake --build build/contracts --parallel 4
+      - name: Test
+        run: ctest --test-dir build/contracts --output-on-failure
+
+      - name: Install Linux graphics build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxi-dev libxinerama-dev libxss-dev libxfixes-dev libxtst-dev libwayland-dev libxkbcommon-dev libasound2-dev libpulse-dev libudev-dev libdrm-dev libgbm-dev libegl1-mesa-dev libgl1-mesa-dev libusb-1.0-0-dev libdecor-0-dev libpipewire-0.3-dev libdbus-1-dev libibus-1.0-dev libgles2-mesa-dev
+
+      - name: Configure complete shared runtime with synthetic identity
+        shell: python
+        run: |
+          import subprocess
+          import time
+          command = [
+              "cmake", "-S", "runtime", "-B", "build/native-audit", "-G", "Ninja",
+              "-DCMAKE_BUILD_TYPE=Release", "-DMKW_BUILD_PRODUCTS=OFF",
+              "-DWIICOMPILED_RUNTIME_COMPILE_AUDIT=ON", "-DWIICOMPILED_GRAPHICS_TESTS=ON",
+              "-DMKW_GENERIC_DOL_BOOT=ON", "-DWIICOMPILED_GUEST_PLATFORM=gamecube",
+              "-DWIICOMPILED_STORAGE_NAMESPACE=compile-audit",
+              "-DAURORA_DAWN_PROVIDER=package", "-DAURORA_DAWN_LINKAGE=shared",
+          ]
+          for attempt in range(3):
+              result = subprocess.run(command, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+              print(result.stdout, end="", flush=True)
+              if result.returncode == 0:
+                  break
+              # Retry only transient download failures; configuration errors remain fatal.
+              transient = any(status in result.stdout for status in (
+                  "returned error: 502", "returned error: 503", "returned error: 504",
+                  "Timeout was reached", "Could not resolve host",
+              ))
+              if attempt == 2 or not transient:
+                  raise SystemExit(result.returncode)
+              print("Transient dependency download failure; retrying in 10 seconds.", flush=True)
+              time.sleep(10)
+
+      - name: Compile GameCube runtime and renderer
+        run: cmake --build build/native-audit --target mkw_runtime_common aurora_core aurora_gx gx_fifo_tests --parallel 3
+
+      - name: Run graphics contracts
+        run: ctest --test-dir build/native-audit/aurora-tests -L gx --output-on-failure
+
+      - name: Configure Wii runtime with the same shared dependencies
+        run: cmake -S runtime -B build/native-audit -DWIICOMPILED_GUEST_PLATFORM=wii
+
+      - name: Compile Wii runtime
+        run: cmake --build build/native-audit --target mkw_runtime_common --parallel 3

@@ -1,0 +1,241 @@
+#include <algorithm>
+#include <atomic>
+#include <cstdint>
+
+#include "abi_bridge.h"
+#include "guest_interrupt_context.h"
+#include "hle/controller_status_contract.h"
+#include "hle_stubs.h"
+#include "memory.h"
+#include "runtime_log.h"
+#include "wii_remote_input.h"
+
+namespace {
+
+// RDSPAF's WPAD control table, validated in Ghidra headless from
+// WPADSetSamplingCallback at 0x8025E68C. The function indexes this four-pointer
+// table and stores the guest sampling callback at control+0x8A8.
+constexpr uint32_t kWpadControlTable = 0x805869F0u;
+constexpr uint32_t kRetraceCount = 0x8062AFB4u;
+
+// Public WPADStatus layout used by the May 2007 RVL SDK linked by RDSPAF.
+constexpr uint32_t kWpadStatusSize = 0x5Au;
+constexpr uint32_t kButton = 0x00u;
+constexpr uint32_t kAccX = 0x02u;
+constexpr uint32_t kAccY = 0x04u;
+constexpr uint32_t kAccZ = 0x06u;
+constexpr uint32_t kObject = 0x08u;
+constexpr uint32_t kDevice = 0x28u;
+constexpr uint32_t kError = 0x29u;
+constexpr uint32_t kFsStickX = 0x2Au;
+constexpr uint32_t kFsStickY = 0x2Bu;
+constexpr uint32_t kFsAccX = 0x2Cu;
+constexpr uint32_t kFsAccY = 0x2Eu;
+constexpr uint32_t kFsAccZ = 0x30u;
+constexpr uint32_t kClButton = 0x2Au;
+constexpr uint32_t kClLStickX = 0x2Cu;
+constexpr uint32_t kClLStickY = 0x2Eu;
+constexpr uint32_t kClRStickX = 0x30u;
+constexpr uint32_t kClRStickY = 0x32u;
+constexpr uint32_t kClTriggerL = 0x34u;
+constexpr uint32_t kClTriggerR = 0x35u;
+
+constexpr uint32_t kRawStatus0 = 0xA0u;
+constexpr uint32_t kRawStatus1 = 0x100u;
+constexpr uint32_t kSamplingCallback = 0x8A8u;
+constexpr uint32_t kProbeResult = 0x8BCu;
+constexpr uint32_t kProbeDevice = 0x8C1u;
+constexpr uint32_t kProbeReady = 0x8DCu;
+
+constexpr uint8_t kDevCore = 0u;
+constexpr uint8_t kDevFreestyle = 1u;
+constexpr uint8_t kDevClassic = 2u;
+constexpr uint8_t kProbeNoDevice = 0xFDu;
+constexpr int8_t kWpadErrNone = 0;
+constexpr int8_t kWpadErrNoController = -1;
+
+constexpr float kRawAccZero = 512.0f;
+constexpr float kRawAccPerG = 100.0f;
+
+std::atomic<uint32_t> g_lastWpadSampleRetrace{0xFFFFFFFFu};
+std::atomic<uint32_t> g_wpadPumpCount{0u};
+thread_local bool g_callbackActive = false;
+std::atomic<bool> g_loggedMissingControl{false};
+std::atomic<bool> g_loggedMissingCallback{false};
+
+uint16_t RawAcc(float g) noexcept {
+    return static_cast<uint16_t>(std::clamp(kRawAccZero + g * kRawAccPerG, 0.0f, 1023.0f));
+}
+
+uint8_t DeviceForSample(const WiiRemoteInput::KpadSample& sample) noexcept {
+    if (sample.hasClassic) return kDevClassic;
+    if (sample.hasNunchuk) return kDevFreestyle;
+    return kDevCore;
+}
+
+void ClearStatus(uint32_t statusPtr) {
+    for (uint32_t offset = 0; offset < kWpadStatusSize; offset += 2u) {
+        Memory::Write16(statusPtr + offset, 0u);
+    }
+}
+
+void WriteNoController(uint32_t statusPtr) {
+    ClearStatus(statusPtr);
+    Memory::Write8(statusPtr + kDevice, kDevCore);
+    Memory::Write8(statusPtr + kError, static_cast<uint8_t>(kWpadErrNoController));
+}
+
+void WriteStatus(uint32_t statusPtr, const WiiRemoteInput::KpadSample& sample) {
+    ClearStatus(statusPtr);
+    Memory::Write16(statusPtr + kButton, static_cast<uint16_t>(sample.hold & 0xFFFFu));
+
+    // WiiRemoteInput exposes KPAD-frame acceleration. Convert it back to the raw
+    // WPAD axes consumed by RDSPAF's translated KPAD sampling callback.
+    Memory::Write16(statusPtr + kAccX, RawAcc(-sample.acc[0]));
+    Memory::Write16(statusPtr + kAccY, RawAcc(sample.acc[2]));
+    Memory::Write16(statusPtr + kAccZ, RawAcc(-sample.acc[1]));
+
+    // No host IR source is required for the hardware/Nunchuk check. 0x3ff is the
+    // SDK out-of-range coordinate and leaves the title's DPD logic authoritative.
+    for (uint32_t i = 0; i < 4u; ++i) {
+        Memory::Write16(statusPtr + kObject + i * 8u, 0x03FFu);
+        Memory::Write16(statusPtr + kObject + i * 8u + 2u, 0x03FFu);
+    }
+
+    Memory::Write8(statusPtr + kDevice, DeviceForSample(sample));
+    Memory::Write8(statusPtr + kError, static_cast<uint8_t>(kWpadErrNone));
+
+    if (sample.hasClassic) {
+        Memory::Write16(statusPtr + kClButton, static_cast<uint16_t>(sample.clHold & 0xFFFFu));
+        Memory::Write16(statusPtr + kClLStickX, static_cast<uint16_t>(sample.clLStickRaw[0]));
+        Memory::Write16(statusPtr + kClLStickY, static_cast<uint16_t>(sample.clLStickRaw[1]));
+        Memory::Write16(statusPtr + kClRStickX, static_cast<uint16_t>(sample.clRStickRaw[0]));
+        Memory::Write16(statusPtr + kClRStickY, static_cast<uint16_t>(sample.clRStickRaw[1]));
+        Memory::Write8(statusPtr + kClTriggerL, sample.clTriggerL);
+        Memory::Write8(statusPtr + kClTriggerR, sample.clTriggerR);
+    } else if (sample.hasNunchuk) {
+        Memory::Write8(statusPtr + kFsStickX,
+                       static_cast<uint8_t>(std::clamp(128.0f + sample.stick[0] * 100.0f, 0.0f, 255.0f)));
+        Memory::Write8(statusPtr + kFsStickY,
+                       static_cast<uint8_t>(std::clamp(128.0f + sample.stick[1] * 100.0f, 0.0f, 255.0f)));
+        Memory::Write16(statusPtr + kFsAccX, RawAcc(-sample.nunchukAcc[0]));
+        Memory::Write16(statusPtr + kFsAccY, RawAcc(sample.nunchukAcc[2]));
+        Memory::Write16(statusPtr + kFsAccZ, RawAcc(-sample.nunchukAcc[1]));
+    }
+}
+
+bool WriteChannelState(uint32_t chan, const WiiRemoteInput::KpadSample* sample, uint32_t& callback) {
+    callback = 0u;
+    const uint32_t control = Memory::Read32(kWpadControlTable + chan * sizeof(uint32_t));
+    if (control == 0u) {
+        if (chan == 0u && !g_loggedMissingControl.exchange(true, std::memory_order_relaxed)) {
+            RT_LOG("meteor-input") << "WPAD pump reached before channel-0 control exists" << std::endl;
+        }
+        return false;
+    }
+
+    if (sample != nullptr) {
+        WriteStatus(control + kRawStatus0, *sample);
+        WriteStatus(control + kRawStatus1, *sample);
+        Memory::Write32(control + kProbeResult, 0u);
+        Memory::Write8(control + kProbeDevice, DeviceForSample(*sample));
+        Memory::Write32(control + kProbeReady, 1u);
+        callback = Memory::Read32(control + kSamplingCallback);
+        if (chan == 0u && callback == 0u &&
+            !g_loggedMissingCallback.exchange(true, std::memory_order_relaxed)) {
+            RT_LOG("meteor-input") << "WPAD channel-0 control=0x" << std::hex << control
+                                   << " exists but sampling callback +0x8a8 is still zero"
+                                   << std::dec << std::endl;
+        }
+        return true;
+    }
+
+    WriteNoController(control + kRawStatus0);
+    WriteNoController(control + kRawStatus1);
+    Memory::Write32(control + kProbeResult, 0xFFFFFFFFu);
+    Memory::Write8(control + kProbeDevice, kProbeNoDevice);
+    Memory::Write32(control + kProbeReady, 0u);
+    return false;
+}
+
+class CallbackScope final {
+public:
+    CallbackScope() noexcept : previous_(g_callbackActive) { g_callbackActive = true; }
+    ~CallbackScope() noexcept { g_callbackActive = previous_; }
+private:
+    bool previous_;
+};
+
+class DeferredCallbacksScope final {
+public:
+    DeferredCallbacksScope() noexcept { OS_HLE_BeginDeferredGuestCallbacks(); }
+    ~DeferredCallbacksScope() noexcept { OS_HLE_EndDeferredGuestCallbacks(); }
+};
+
+} // namespace
+
+// RDSPAF's linked SDK KPADRead entry. The title's only direct caller at
+// 0x800110B8 passes (channel, per-channel status buffer, 16) and immediately
+// consumes the returned sample count, matching the RVL KPADRead ABI. Reuse the
+// generic runtime's KPAD/Nunchuk implementation rather than fabricating WPAD's
+// private Bluetooth control block.
+extern "C" int32_t KPAD__Read_HLE(uint32_t chan, uint32_t statusPtr, uint32_t count);
+
+extern "C" int32_t Meteor_KPADRead(uint32_t chan, uint32_t statusPtr, uint32_t count) {
+    return KPAD__Read_HLE(chan, statusPtr, count);
+}
+// Diagnostic isolation: keep the validated RDSPAF wrapper available, but do
+// not take over the translated SDK entry until the current black-screen
+// regression is separated from input semantics.  The last verified rendered
+// milestone (PID 12112) ran the translated 0x8025A660 path.
+// REGISTER_TITLE_NATIVE_FUNCTION(0x8025A660, Meteor_KPADRead);
+
+void Meteor_PumpHostWpadSamples(CpuContext* ctx) noexcept {
+    if (ctx == nullptr || g_callbackActive) return;
+
+    uint32_t retrace = 0u;
+    uint32_t control0 = 0u;
+    try {
+        retrace = Memory::Read32(kRetraceCount);
+        control0 = Memory::Read32(kWpadControlTable);
+    } catch (const Memory::AccessViolation&) {
+        return;
+    }
+    const uint32_t pumpCount = g_wpadPumpCount.fetch_add(1u, std::memory_order_relaxed) + 1u;
+    if (pumpCount <= 8u || (pumpCount & (pumpCount - 1u)) == 0u) {
+        RT_LOG("meteor-input") << "WPAD pump checkpoint #" << pumpCount
+                               << " retrace=" << retrace
+                               << " control0=0x" << std::hex << control0 << std::dec
+                               << std::endl;
+    }
+    if (g_lastWpadSampleRetrace.exchange(retrace, std::memory_order_relaxed) == retrace) return;
+
+    WiiRemoteInput::Poll();
+    for (uint32_t chan = 0; chan < WpadContract::kChannelCount; ++chan) {
+        WiiRemoteInput::KpadSample sample{};
+        const bool have = WiiRemoteInput::ReadKpadSample(chan, sample);
+        uint32_t callback = 0u;
+        try {
+            (void)WriteChannelState(chan, have ? &sample : nullptr, callback);
+        } catch (const Memory::AccessViolation&) {
+            // WPAD owns control-block lifetime during boot. A report that races
+            // early initialization is simply retried on the next retrace.
+            continue;
+        }
+        if (!have || callback == 0u) continue;
+
+        static bool loggedCallback = false;
+        if (!loggedCallback) {
+            loggedCallback = true;
+            RT_LOG("meteor-input") << "Host WPAD reports active; sampling callback=0x"
+                                   << std::hex << callback << std::dec << std::endl;
+        }
+
+        GuestInterruptCallbackContext interrupt;
+        CpuContext* callbackCtx = interrupt.get();
+        DeferredCallbacksScope deferred;
+        CallbackScope callbackScope;
+        callbackCtx->gpr[3] = chan;
+        InvokeIndirectCpu(callback, callbackCtx);
+    }
+}
