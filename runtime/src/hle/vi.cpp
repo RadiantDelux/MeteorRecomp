@@ -9,7 +9,6 @@
 #include "platform/host_platform.h"
 #include "runtime_log.h"
 #include "recomp_mod_loader.h"
-#include "practice_sweeper.h"
 
 #include <dolphin/vi.h>
 #include <dolphin/gx/GXAurora.h>
@@ -545,10 +544,6 @@ void AdvanceRetrace(CpuContext* ctx, Clock::time_point retraceStamp, bool servic
         WriteGuestStateLocked();
     }
 
-    // Diagnostic product only. Publish the scripted sample immediately after
-    // the guest-visible retrace count is committed, before any retrace waiter or
-    // callback can sample KPAD/WPAD/BT input for this retrace.
-    PracticeSweeper::OnRetrace(retraceValue);
 
     // Wake up threads sleeping on the VI retrace queue (VIWaitForRetrace).
     // The retrace count has been incremented and written to guest memory.
