@@ -10,6 +10,7 @@
 #include "hle_stubs.h"
 #include "ppc_runtime.h"
 #include "runtime_log.h"
+#include "host_stall_trace.h"
 #include "hle/net/network.h"
 #include "RuntimeConfig.h"
 #include "os_internal.h"
@@ -370,6 +371,7 @@ extern "C" void OS_HLE_ProcessAlarms(int maxToProcess)
 
 extern "C" void OS_HLE_ProcessAlarmsDeferred(int maxToProcess)
 {
+    const HostStallTrace trace("alarm-service");
     if (maxToProcess <= 0 || !OS_HLE_InterruptsEnabled()) {
         return;
     }

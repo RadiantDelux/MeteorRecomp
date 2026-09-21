@@ -5,6 +5,7 @@
 #include <atomic>
 #include <mutex>
 #include <vector>
+#include "audio_playback_continuity.h"
 
 #include <SDL3/SDL_audio.h>
 
@@ -19,6 +20,7 @@ public:
     // native-endian interleaved left, right samples.
     bool PushWiiAiSamplesBE16(const uint8_t* data, size_t bytes);
     bool PushSamplesLE16(const int16_t* samples, size_t sampleCount);
+    bool PushGapFrames(size_t frames);
 
     // Applied to the final host output, covering both AX and direct AI DMA.
     void SetMasterVolume(float volume);
@@ -31,7 +33,7 @@ private:
     AudioBackend& operator=(const AudioBackend&) = delete;
 
     bool EnsureInitializedLocked(uint32_t sampleRate, uint32_t channels);
-    bool EnqueueSamples(const int16_t* samples, size_t sampleCount);
+    bool EnqueueSamples(const int16_t* samples, size_t sampleCount, bool gap = false);
     void FeedAudioStream(SDL_AudioStream* stream, int additionalAmount);
     static void SDLCALL AudioStreamCallback(void* userdata, SDL_AudioStream* stream,
                                             int additionalAmount, int totalAmount);
@@ -60,6 +62,8 @@ private:
     // RtlAllocateHeap directly in the guest IRQ hot path. Allocate once when
     // the host stream is configured and only copy samples thereafter.
     std::vector<int16_t> m_pendingSamples;
+    std::vector<uint8_t> m_pendingGap;
+    AudioPlaybackContinuity m_continuity;
     size_t m_queueReadSample = 0;
     size_t m_queueWriteSample = 0;
     size_t m_pendingSampleCount = 0;
@@ -70,4 +74,5 @@ private:
     std::atomic<uint64_t> m_enqueuedBytes{0};
     std::atomic<uint64_t> m_producerBlocks{0};
     std::atomic<uint64_t> m_underrunBytes{0};
+    std::atomic<uint64_t> m_staleDmaFrames{0};
 };

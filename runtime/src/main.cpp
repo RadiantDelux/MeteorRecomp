@@ -178,6 +178,8 @@ struct ProcessTranscriptState {
     std::filesystem::path path;
     std::ofstream file;
     std::mutex fileMutex;
+    size_t unflushedBytes = 0;
+    std::chrono::steady_clock::time_point lastFileFlush{};
     std::atomic_bool initialized{false};
     int savedStdoutFd = -1;
     int savedStderrFd = -1;
@@ -255,11 +257,24 @@ void WriteProcessTranscriptChunk(ProcessTranscriptState& state, const char* data
 
     std::lock_guard<std::mutex> lock(state.fileMutex);
     state.file.write(data, static_cast<std::streamsize>(size));
-    state.file.flush();
+    state.unflushedBytes += size;
+    const auto now = std::chrono::steady_clock::now();
+    // The transcript runs on drain threads, but flushing every 4 KiB still
+    // creates avoidable filesystem pressure and can leave the tiny stdout/
+    // stderr pipes back-pressured during verbose BT/audio/frame diagnostics.
+    // Keep crash-adjacent logs reasonably fresh while batching normal writes.
+    constexpr size_t kFlushBytes = 64u * 1024u;
+    constexpr auto kFlushPeriod = std::chrono::milliseconds(250);
+    if (state.lastFileFlush == std::chrono::steady_clock::time_point{} ||
+        state.unflushedBytes >= kFlushBytes || now - state.lastFileFlush >= kFlushPeriod) {
+        state.file.flush();
+        state.unflushedBytes = 0;
+        state.lastFileFlush = now;
+    }
 }
 
 void PumpTranscriptPipe(ProcessTranscriptState& state, int readFd, int mirrorFd) {
-    std::array<char, 4096> buffer{};
+    std::array<char, 16384> buffer{};
     for (;;) {
 #if defined(_WIN32)
         const int bytesRead = _read(readFd, buffer.data(), static_cast<unsigned int>(buffer.size()));
@@ -290,6 +305,17 @@ void PumpTranscriptPipe(ProcessTranscriptState& state, int readFd, int mirrorFd)
         }
 
         WriteProcessTranscriptChunk(state, buffer.data(), static_cast<size_t>(bytesRead));
+    }
+    // Normal shutdown closes the write end and reaches here after draining the
+    // final bytes. Flush the shared transcript once more so batching never
+    // changes normal-run log completeness.
+    {
+        std::lock_guard<std::mutex> lock(state.fileMutex);
+        if (state.file) {
+            state.file.flush();
+            state.unflushedBytes = 0;
+            state.lastFileFlush = std::chrono::steady_clock::now();
+        }
     }
 }
 
@@ -330,7 +356,10 @@ void CloseFileDescriptor(int fd) {
 bool InstallTranscriptPipe(int& outReadFd, int& outWriteFd, int targetFd) {
 #if defined(_WIN32)
     int pipeFds[2]{-1, -1};
-    if (_pipe(pipeFds, 8192, _O_BINARY) != 0) {
+    // Absorb short console/filesystem stalls without forcing the guest thread
+    // that emitted a log line to wait for the transcript mirror.  The old 8 KiB
+    // pipe could fill in only a couple of verbose diagnostic writes.
+    if (_pipe(pipeFds, 256 * 1024, _O_BINARY) != 0) {
         return false;
     }
 #else

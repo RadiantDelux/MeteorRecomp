@@ -5,6 +5,8 @@
 #include "memory.h"
 #include "memory_access.h"
 #include "runtime_log.h"
+#include "loop_service_cadence.h"
+#include "host_stall_trace.h"
 
 #include <algorithm>
 #include <atomic>
@@ -45,10 +47,11 @@ std::atomic<uint64_t> g_meteorLoopSerial{0u};
 // thread at a time.  Keep the hot backedge cadence counter on that execution
 // thread so millions of decoder-loop checkpoints do not perform a contended
 // atomic RMW merely for host diagnostics.  The public atomics above are sparse
-// watchdog snapshots only; service cadence continues to use every local tick.
+// watchdog snapshots only; every local tick still reaches the cadence gate.
 thread_local uint64_t g_meteorLocalLoopSerial = 0u;
 thread_local uint64_t g_meteorArmedLoopSerial = 0u;
 thread_local uint32_t g_meteorArmedLoopPc = 0u;
+thread_local meteor::LoopServiceCadence g_meteorLoopServiceCadence;
 std::atomic<uint64_t> g_meteorCount8015A800{0u};
 std::atomic<uint64_t> g_meteorCount8015A06C{0u};
 std::atomic<uint64_t> g_meteorCount80257520{0u};
@@ -1854,39 +1857,12 @@ void Meteor_RuntimeReturnCheckpoint(uint32_t target, CpuContext* ctx) noexcept {
 
 bool Meteor_RuntimeLoopCheckpointRequired(uint32_t guestPc) noexcept {
     const uint64_t loopSerial = ++g_meteorLocalLoopSerial;
-
-    // 0x8030741C..0x8030A74C is the HEADLESS-verified THP JPEG decoder family.
-    // Runtime loop checkpoints are host-injected asynchronous-hardware service
-    // points, not guest instructions.  Inside this exceptionally hot family the
-    // hook has no guest-visible work except at the existing 0x100 PE cadence
-    // (the heavier 0x4000 cadence is a subset).  Avoid spilling/reloading the
-    // entire translated register set on the other 255/256 backedges while still
-    // advancing the exact same global serial on every backedge.
-    const bool thpDecoderHot = guestPc >= 0x8030741Cu && guestPc <= 0x8030A74Cu;
-    // 0x801D47F0 and 0x801D49A0 are the two bounded 96-sample THP mixer loops.
-    // Running the full host checkpoint on all 95 backedges creates ~32k register
-    // spill/service/reload crossings per second at 32 kHz even though the only
-    // asynchronous service cadences are 0x100/0x2000/0x4000. Keep advancing the
-    // global serial on every sample, but only spill when one of those real service
-    // boundaries can actually be due. Do NOT gate the queue-wait loops 0x801D4784
-    // or 0x801D4934; they need full progress/reschedule checkpoints while empty.
-    const bool thpAudioBoundedMix = guestPc == 0x801D47F0u || guestPc == 0x801D49A0u;
-    // These retail loops can execute in very large bursts:
-    //   0x80257830: bounded 0x80-iteration setting.txt byte-table scan.
-    //   0x802579B4: bounded static AREA mapping-table scan.
-    //   0x8002D394: synchronous service/queue poll while the main thread waits
-    //               for an asynchronous event.
-    // The host-injected checkpoint has no functional work before the 0x100 PE
-    // cadence (audio/VI/alarm/IOS are 0x2000/0x4000). Advance the exact same
-    // serial on every backedge, but avoid a full translated-register spill and
-    // reload on the other 255/256 iterations.
-    const bool meteorBoundedTableScan =
-        guestPc == 0x80257830u || guestPc == 0x802579B4u;
-    const bool meteorHotServicePoll = guestPc == 0x8002D394u;
-    const bool thpHotLoop =
-        thpDecoderHot || thpAudioBoundedMix || meteorBoundedTableScan ||
-        meteorHotServicePoll;
-    const bool required = !thpHotLoop || (loopSerial & 0xFFu) == 0u;
+    // The full hook below has functional work only on service boundaries or
+    // in the two scheduler idle loops. Avoid register spills/reloads for empty
+    // checkpoints throughout gameplay, not just in the movie decoder. Queue
+    // polls still reach every original PE/audio/VI service boundary.
+    const bool required = meteor::NeedsLoopCheckpoint(
+        loopSerial, guestPc, MeteorRuntimeTraceEnabledLocal());
     if (required) {
         g_meteorArmedLoopSerial = loopSerial;
         g_meteorArmedLoopPc = guestPc;
@@ -1910,11 +1886,17 @@ void Meteor_RuntimeLoopCheckpoint(uint32_t guestPc, CpuContext* ctx) noexcept {
         loopSerial = ++g_meteorLocalLoopSerial;
     }
 
+    meteor::LoopServiceCadence::Due serviceDue{};
+    if (!VI_HLE_IsAdvancingRetrace() &&
+        meteor::NeedsLoopCheckpoint(loopSerial, guestPc, false)) {
+        serviceDue = g_meteorLoopServiceCadence.Poll(loopSerial, MeteorSteadyNanos());
+    }
+
     // The watchdog needs only a recent progress sample, not a globally atomic
     // write for every CFG backedge.  Publish at the same 0x4000 cadence already
     // used by the heavy asynchronous-hardware service.  `loopSerial` itself is
-    // still incremented on *every* backedge, so the 0x100 PE and 0x4000
-    // VI/alarm/IOS schedules below are bit-for-bit unchanged.
+    // still incremented on every backedge. Original instruction-count service
+    // boundaries remain available alongside the elapsed-time polls.
     if ((loopSerial & 0x3FFFu) == 0u) {
         g_meteorLastLoopPc.store(guestPc, std::memory_order_relaxed);
         g_meteorLastLoopLr.store(ctx->lr, std::memory_order_relaxed);
@@ -1944,14 +1926,10 @@ void Meteor_RuntimeLoopCheckpoint(uint32_t guestPc, CpuContext* ctx) noexcept {
         }
     }
 
-    // AID DMA runs every 3 ms at RDSPAF's 32 kHz / 0x180-byte configuration.
-    // The general async pump below is intentionally only 0x4000 backedges, which
-    // is ~275-300 Hz at the title's observed 4.5-4.9 M backedges/s and therefore
-    // cannot provide the ~333 completion opportunities/s that AID needs.  Give
-    // audio its own lighter 0x2000 boundary; Audio_HLE_PollDeferred itself only
-    // delivers when the 3 ms DMA deadline has elapsed, uses a private interrupt
-    // context, and coalesces a latched late completion instead of bursting.
-    if ((loopSerial & 0x1FFFu) == 0u && !VI_HLE_IsAdvancingRetrace()) {
+    // AID DMA runs every 3 ms. Keep the 0x2000 backedge opportunities and
+    // also poll after 1 ms of host time, including while the scheduler is idle.
+    // The device itself delivers only interrupts whose deadline has elapsed.
+    if (serviceDue.audio && !VI_HLE_IsAdvancingRetrace()) {
         OS_HLE_ApplyInterruptStateFromMsr(ctx->msr);
         Audio_HLE_PollDeferred();
         TryMeteorInterruptReturnReschedule(ctx);
@@ -1959,13 +1937,13 @@ void Meteor_RuntimeLoopCheckpoint(uint32_t guestPc, CpuContext* ctx) noexcept {
 
     // VI retrace is asynchronous hardware. Once the guest leaves the scheduler
     // idle loop it can spend long stretches inside translated hot loops while a
-    // runnable main thread exists; the native scheduler therefore has no reason
-    // to enter its idle-only VI pump. Sample the existing loop checkpoints at a
-    // bounded cadence and deliver only *due* retraces on an interrupt copy. This
+    // runnable main thread exists. Poll by time as well as backedge count so
+    // different menu/combat workloads cannot delay the same hardware timers.
+    // Deliver only *due* retraces on an interrupt copy. This
     // wakes VIWaitForRetrace queues exactly like the hardware IRQ without pumping
     // any title service (GCD/MFS) directly. The real phase worker remains the code
     // that calls the retail service dispatcher after it is woken.
-    if ((loopSerial & 0x3FFFu) == 0u && !VI_HLE_IsAdvancingRetrace()) {
+    if (serviceDue.async && !VI_HLE_IsAdvancingRetrace()) {
         const uint64_t thpAsyncBeginNs = g_thpPerfFrame.active ? MeteorSteadyNanos() : 0u;
         ConfigureMeteorSchedulerWaitLayouts();
         // RDSPAF's OSDisable/Enable/RestoreInterrupts bodies are still translated,
@@ -2000,6 +1978,7 @@ void Meteor_RuntimeLoopCheckpoint(uint32_t guestPc, CpuContext* ctx) noexcept {
             CpuContext* interruptCpu = interrupt.get();
             OS_HLE_BeginDeferredGuestCallbacks();
             try {
+                const HostStallTrace trace("ios-service");
                 Meteor_BtUsbPump(interruptCpu);
             } catch (...) {
                 OS_HLE_EndDeferredGuestCallbacks();
@@ -2009,7 +1988,7 @@ void Meteor_RuntimeLoopCheckpoint(uint32_t guestPc, CpuContext* ctx) noexcept {
             // Diagnostic: callbacks may wake the BTA task while scheduler
             // switching is intentionally suppressed above. Observe whether a
             // reschedule request survives the safe unwind boundary.
-            try {
+            if (MeteorRuntimeTraceEnabledLocal()) try {
                 const auto scheduler = OS_HLE_GetSchedulerGuestStateLayout();
                 if (scheduler.schedulerReschedFlag != 0u &&
                     Memory::Read32(scheduler.schedulerReschedFlag) != 0u) {
@@ -2304,10 +2283,14 @@ void Meteor_RuntimeLoopCheckpoint(uint32_t guestPc, CpuContext* ctx) noexcept {
     // pending mask; 0x80210AD8 is the companion backedge after restoring IRQ
     // state. No title-specific hardware semantics live here: delegate the wait
     // to the shared Wii scheduler service used by native SelectThread.
-    if (guestPc == 0x80210ADCu || guestPc == 0x80210AD8u) {
-        static std::atomic<uint32_t> diagnosticCount{0u};
-        const uint32_t count = diagnosticCount.fetch_add(1u, std::memory_order_relaxed) + 1u;
-        if (count <= 8u || (count & (count - 1u)) == 0u) {
+    if (meteor::IsSchedulerIdleLoop(guestPc)) {
+        const bool traceScheduler = MeteorRuntimeTraceEnabledLocal();
+        uint32_t count = 0u;
+        if (traceScheduler) {
+            static std::atomic<uint32_t> diagnosticCount{0u};
+            count = diagnosticCount.fetch_add(1u, std::memory_order_relaxed) + 1u;
+        }
+        if (traceScheduler && (count <= 8u || (count & (count - 1u)) == 0u)) {
             try {
                 const uint32_t pending = Memory::Read32(0x8062ADC8u);
                 const uint32_t retrace = Memory::Read32(0x8062AFB4u);
@@ -2351,7 +2334,7 @@ void Meteor_RuntimeLoopCheckpoint(uint32_t guestPc, CpuContext* ctx) noexcept {
         if (DeliverMeteorPeFinishInterrupt(ctx)) {
             return;
         }
-        if (count <= 8u || (count & (count - 1u)) == 0u) {
+        if (traceScheduler && (count <= 8u || (count & (count - 1u)) == 0u)) {
             try {
                 const uint32_t pendingAfter = Memory::Read32(0x8062ADC8u);
                 const uint32_t thread = 0x80559D98u;

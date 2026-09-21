@@ -110,7 +110,7 @@ if(MKW_PLATFORM_MACOS)
 endif()
 
 # Cross-project correctness contracts; no generated game inputs are needed.
-foreach(test IN ITEMS psq_scale audio_dma_timing guest_clock host_presentation_pacer card_checkpoint disc_alignment project_paths)
+foreach(test IN ITEMS psq_scale audio_dma_timing audio_playback_continuity interpolation_worker_pool interpolation_cadence presentation_schedule meteor_loop_service_cadence guest_clock host_presentation_pacer card_checkpoint disc_alignment project_paths)
     if(test STREQUAL "psq_scale")
         set(source "psq_scale_tests.cpp")
     else()

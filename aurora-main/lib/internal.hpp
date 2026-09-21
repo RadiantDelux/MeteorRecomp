@@ -135,6 +135,7 @@ bool wait_for_frame_worker_for(std::chrono::microseconds timeout) noexcept;
 std::recursive_mutex& renderer_gpu_mutex() noexcept;
 // Low-overhead causal frame telemetry. Callers aggregate work before entering
 // these helpers; they never log per operation.
+bool frame_cost_telemetry_enabled() noexcept;
 void record_static_texture_upload_telemetry(uint32_t logicalFrame,
                                             std::chrono::nanoseconds createTexture,
                                             std::chrono::nanoseconds createView,

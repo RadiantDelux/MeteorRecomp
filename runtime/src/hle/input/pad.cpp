@@ -53,7 +53,6 @@ extern "C" uint32_t PAD__Read_HLE(uint32_t statusPtr)
     // applies while input is blocked (overlay open) so the port does not flip
     // between "connected" and "no controller" every time the overlay toggles.
     WiiRemoteInput::HideRemotesFromPad(statuses, PAD_CHANMAX);
-
     try {
         for (uint32_t i = 0; i < PAD_CHANMAX; ++i) {
             WritePadStatus(statusPtr + static_cast<uint32_t>(i * PadStatusContract::kGuestStatusSize),

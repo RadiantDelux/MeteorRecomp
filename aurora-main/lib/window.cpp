@@ -34,6 +34,8 @@ extern "C" void Android_UnlockActivityMutex(void);
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
+#include <cstdlib>
 #include <vector>
 
 #include "dolphin/vi/vi_internal.hpp"
@@ -41,6 +43,35 @@ extern "C" void Android_UnlockActivityMutex(void);
 namespace aurora::window {
 namespace {
 Module Log("aurora::window");
+
+// Only active during frame-time diagnostics. Separate OS event pumping from
+// event handlers so a slow device poll/window operation is not attributed to
+// rendering or guest execution. Wall time includes host preemption.
+class WindowEventTrace {
+  using Clock = std::chrono::steady_clock;
+  const char* phase_;
+  const SDL_Event* event_;
+  Clock::time_point started_{};
+  static bool enabled() {
+    static const bool value = std::getenv("METEOR_TRACE_FRAME_TIMING") != nullptr;
+    return value;
+  }
+public:
+  explicit WindowEventTrace(const char* phase, const SDL_Event* event = nullptr)
+      : phase_(phase), event_(event) {
+    if (enabled()) started_ = Clock::now();
+  }
+  ~WindowEventTrace() {
+    if (!enabled()) return;
+    const auto finished = Clock::now();
+    const double ms = std::chrono::duration<double, std::milli>(finished - started_).count();
+    if (ms > 8.0) {
+      Log.info("Window stall: phase={} wall={:.3f}ms event={} endNs={}", phase_, ms,
+               event_ ? event_->type : 0u,
+               std::chrono::duration_cast<std::chrono::nanoseconds>(finished.time_since_epoch()).count());
+    }
+  }
+};
 
 SDL_Window* g_window;
 SDL_Renderer* g_renderer;
@@ -253,6 +284,7 @@ bool is_alt_enter_event(const SDL_Event& event) noexcept {
 }
 
 void process_event(SDL_Event& event) {
+  const WindowEventTrace trace("event-handler", &event);
 #ifdef AURORA_ENABLE_GX
   imgui::process_event(event);
 #endif
@@ -344,17 +376,29 @@ void process_event(SDL_Event& event) {
 
 const AuroraEvent* poll_events() {
   g_events.clear();
-  SDL_Event event;
+  SDL_Event event{};
   // Clear out the previous scroll values to prevent ghost input
   input::set_mouse_scroll(0, 0);
   if (is_paused()) {
-    if (SDL_WaitEvent(&event)) {
+    bool received = false;
+    {
+      const WindowEventTrace trace("paused-wait", &event);
+      received = SDL_WaitEvent(&event);
+    }
+    if (received) {
       process_event(event);
     } else {
       Log.warn("SDL_WaitEvent failed: {}", SDL_GetError());
     }
   }
-  while (SDL_PollEvent(&event)) {
+  for (;;) {
+    bool received = false;
+    event.type = 0;
+    {
+      const WindowEventTrace trace("event-poll", &event);
+      received = SDL_PollEvent(&event);
+    }
+    if (!received) break;
     process_event(event);
   }
   g_events.push_back(AuroraEvent{
@@ -584,8 +628,10 @@ bool is_presentable() noexcept {
 
 void pump_events() noexcept {
   if (g_window != nullptr) {
+    const WindowEventTrace trace("window-sync");
     SDL_SyncWindow(g_window);
   }
+  const WindowEventTrace trace("event-pump");
   SDL_PumpEvents();
 }
 

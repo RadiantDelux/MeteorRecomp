@@ -88,6 +88,8 @@ auto fmt::formatter<AuroraLogLevel>::format(AuroraLogLevel level, format_context
 // --- GPU buffers (default-constructed, not used in tests) ---
 namespace aurora::gfx {
 AuroraStats g_stats;
+// CPU-only fixture records one render pass; it never constructs GPU targets.
+HashType current_render_pass_signature() noexcept { return 1; }
 wgpu::Buffer g_vertexBuffer;
 wgpu::Buffer g_uniformBuffer;
 wgpu::Buffer g_indexBuffer;

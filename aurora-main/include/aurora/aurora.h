@@ -139,6 +139,11 @@ AuroraInfo aurora_initialize(int argc, char* argv[], const AuroraConfig* config)
 void aurora_shutdown();
 const AuroraEvent* aurora_update();
 bool aurora_begin_frame();
+// Same frame preparation as aurora_begin_frame(), but assumes the caller has
+// just serviced aurora_update() on the window-owning thread.  Runtime frontends
+// that already poll SDL once per frame use this to avoid a second SDL_PumpEvents
+// in the same boundary.
+bool aurora_begin_frame_after_update();
 void aurora_end_frame();
 typedef void (*AuroraFrameWorkerWaitCallback)();
 // Called from the producer thread at bounded intervals while Aurora waits for
@@ -147,7 +152,9 @@ void aurora_set_frame_worker_wait_callback(AuroraFrameWorkerWaitCallback callbac
 void aurora_wait_for_frame_worker();
 bool aurora_wait_for_frame_worker_for(uint32_t timeoutMicros);
 // Absolute schedule for the next sealed frame, on steady_clock: baseNanos anchors the group and
-// intervalNanos is the period, so slot k of N+1 fires at base + k*interval/(N+1). Zeros clear it.
+// intervalNanos is the physical VI period. A sealed 30->60 group spans two
+// periods; higher-rate groups span one. Frames with no midpoint stay native.
+// Zeros clear the schedule.
 void aurora_set_present_schedule(uint64_t baseNanos, uint64_t intervalNanos);
 // Wii/GameCube VI scanout mode. When enabled, sealing a GX frame only latches
 // an immutable presentation snapshot; it does not present the surface itself.

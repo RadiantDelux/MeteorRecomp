@@ -3,9 +3,11 @@
 #include "hle_stubs.h"
 #include "ppc_runtime.h"
 #include "audio_backend.h"
+#include "audio_playback_continuity.h"
 #include "ax_dsp.h"
 #include "music_attenuation.h"
 #include "runtime_log.h"
+#include "host_stall_trace.h"
 
 #include <algorithm>
 #include <cstdint>
@@ -47,6 +49,7 @@ struct AIDmaState {
     bool loggedBackendFailure = false;
     bool loggedMissingCallback = false;
     bool loggedAccessFailure = false;
+    AudioDmaPlaybackCursor playback;
 };
 
 AIDmaState g_ai{};
@@ -281,6 +284,7 @@ struct CompletedAiDmaBlock {
     uint32_t length = 0;
     uint32_t callback = 0;
     uint32_t sampleRate = kDefaultSampleRate;
+    bool fresh = true;
 };
 
 // Advance the physical AID engine from a single monotonic wall-clock cursor.
@@ -289,7 +293,10 @@ struct CompletedAiDmaBlock {
 // Register writes only affect the next reload through programmedStart/Length.
 uint32_t AdvanceAiPhysicalTo(uint64_t nowMicros)
 {
-    std::vector<CompletedAiDmaBlock> completed;
+    // No guest callbacks run until this batch has been published. Reuse the
+    // storage instead of allocating/freeing it on every 3 ms audio interrupt.
+    thread_local std::vector<CompletedAiDmaBlock> completed;
+    completed.clear();
 
     {
         std::lock_guard<std::mutex> lock(g_ai.mutex);
@@ -324,7 +331,9 @@ uint32_t AdvanceAiPhysicalTo(uint64_t nowMicros)
 
             g_ai.accumulatorSeconds -= blockDuration;
             completed.push_back({g_ai.activeStartAddr, g_ai.activeLength,
-                                 g_ai.callback, g_ai.sampleRate});
+                                 g_ai.callback, g_ai.sampleRate,
+                                 g_ai.playback.Complete(g_aiGuestStateLayout.suppressStaleDmaAudio &&
+                                                       g_ai.callback != 0u)});
 
             // Physical autoreload happens before AIDINT. The callback that this
             // completion wakes may program a later buffer, never the one that is
@@ -379,7 +388,10 @@ uint32_t AdvanceAiPhysicalTo(uint64_t nowMicros)
             continue;
         }
 
-        if (!PushAudioBlock(block.startAddr, block.length)) {
+        const bool pushed = block.fresh
+            ? PushAudioBlock(block.startAddr, block.length)
+            : AudioBackend::Instance().PushGapFrames(block.length / (kAudioChannels * kBytesPerSample));
+        if (!pushed) {
             std::lock_guard<std::mutex> lock(g_ai.mutex);
             if (!g_ai.loggedAccessFailure) {
                 g_ai.loggedAccessFailure = true;
@@ -582,6 +594,7 @@ void AI_HLE_InitDMA(uint32_t start_addr, uint32_t length)
     g_ai.programmedStartAddr = start_addr;
     g_ai.registerStartAddr = EncodeAIDmaStartRegister(start_addr);
     g_ai.programmedLength = EncodeAIDmaLengthRegister(length);
+    g_ai.playback.Program();
     if (!g_ai.enabled) {
         g_ai.bytesLeft = g_ai.programmedLength;
     }
@@ -629,6 +642,7 @@ void AI_HLE_StartDMA()
         if (!g_ai.enabled) {
             g_ai.activeStartAddr = g_ai.programmedStartAddr;
             g_ai.activeLength = g_ai.programmedLength;
+            g_ai.playback.Start();
             g_ai.bytesLeft = g_ai.activeLength;
             g_ai.accumulatorSeconds = 0.0;
             g_ai.lastAdvanceMicros = nowMicros;
@@ -756,6 +770,7 @@ PPC_NATIVE_OVERRIDE(8015D57C, DSPAssertTask_8015d57c, uint32_t, (uint32_t taskPt
 
 void Audio_HLE_Tick(CpuContext* ctx, uint32_t deltaMicros)
 {
+    const HostStallTrace trace("audio-service");
     // The physical AID clock is absolute now; caller poll deltas are deliberately
     // ignored because nested polls used to consume callback wall time and could
     // either double-count or permanently drop it.
@@ -868,6 +883,7 @@ void Audio_HLE_Poll(CpuContext* ctx)
 
 void Audio_HLE_PollDeferred()
 {
+    const HostStallTrace trace("audio-deferred");
     // AID transport is hardware and continues even while EE is masked. Only
     // delivery of the guest interrupt/callback is gated by interrupt state.
     const uint32_t physicalBlocks = AdvanceAiPhysicalTo(AudioSteadyMicros());

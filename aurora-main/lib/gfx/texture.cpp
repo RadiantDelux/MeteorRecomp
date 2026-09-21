@@ -65,9 +65,11 @@ TextureHandle new_dynamic_texture_2d_impl(uint32_t width, uint32_t height, uint3
       .mipLevelCount = mips,
       .sampleCount = 1,
   };
-  const auto createTextureStarted = std::chrono::steady_clock::now();
+  const auto createTextureStarted = timing != nullptr ? std::chrono::steady_clock::now()
+                                                       : std::chrono::steady_clock::time_point{};
   auto texture = g_device.CreateTexture(&textureDescriptor);
-  const auto createTextureFinished = std::chrono::steady_clock::now();
+  const auto createTextureFinished = timing != nullptr ? std::chrono::steady_clock::now()
+                                                        : std::chrono::steady_clock::time_point{};
   const auto viewLabel = fmt::format("{} view", label);
   wgpu::TextureViewDescriptor textureViewDescriptor{
       .label = viewLabel.c_str(),
@@ -75,9 +77,11 @@ TextureHandle new_dynamic_texture_2d_impl(uint32_t width, uint32_t height, uint3
       .dimension = wgpu::TextureViewDimension::e2D,
       .mipLevelCount = mips,
   };
-  const auto createViewStarted = std::chrono::steady_clock::now();
+  const auto createViewStarted = timing != nullptr ? std::chrono::steady_clock::now()
+                                                    : std::chrono::steady_clock::time_point{};
   auto textureView = texture.CreateView(&textureViewDescriptor);
-  const auto createViewFinished = std::chrono::steady_clock::now();
+  const auto createViewFinished = timing != nullptr ? std::chrono::steady_clock::now()
+                                                     : std::chrono::steady_clock::time_point{};
   if (timing != nullptr) {
     timing->createTexture = createTextureFinished - createTextureStarted;
     timing->createView = createViewFinished - createViewStarted;
@@ -129,15 +133,18 @@ TextureHandle new_static_texture_2d(uint32_t width, uint32_t height, uint32_t mi
   mips = clamp_mip_count(width, height, mips, label);
   const uint32_t recordingFrame = current_frame();
   const uint32_t logicalFrame = recordingFrame == UINT32_MAX ? UINT32_MAX : recordingFrame + 1;
+  const bool traceCosts = aurora::frame_cost_telemetry_enabled();
   const uint64_t sourceBytes = data.size() == UINT32_MAX ? 0 : data.size();
   StaticTextureTiming timing;
-  auto handle = new_dynamic_texture_2d_impl(width, height, mips, format, label, &timing);
+  auto handle = new_dynamic_texture_2d_impl(width, height, mips, format, label,
+                                            traceCosts ? &timing : nullptr);
   auto& ref = *handle;
 
   ConvertedTexture converted;
   std::chrono::nanoseconds conversionDuration{};
   if (ref.gxFormat != InvalidTextureFormat) {
-    const auto conversionStarted = std::chrono::steady_clock::now();
+    const auto conversionStarted = traceCosts ? std::chrono::steady_clock::now()
+                                               : std::chrono::steady_clock::time_point{};
     if (tlut) {
       CHECK(ref.size.height == 1, "new_static_texture_2d[{}]: expected tlut height 1, got {}", label, ref.size.height);
       CHECK(ref.mipCount == 1, "new_static_texture_2d[{}]: expected tlut mipCount 1, got {}", label, ref.mipCount);
@@ -149,7 +156,7 @@ TextureHandle new_static_texture_2d(uint32_t width, uint32_t height, uint32_t mi
       data = converted.data;
       ref.hasArbitraryMips = converted.hasArbitraryMips;
     }
-    conversionDuration = std::chrono::steady_clock::now() - conversionStarted;
+    if (traceCosts) conversionDuration = std::chrono::steady_clock::now() - conversionStarted;
   }
 
   uint32_t offset = 0;
@@ -157,6 +164,7 @@ TextureHandle new_static_texture_2d(uint32_t width, uint32_t height, uint32_t mi
   uint32_t writeCount = 0;
   std::chrono::nanoseconds writeDuration{};
   const auto recordTelemetry = [&] {
+    if (!traceCosts) return;
     aurora::record_static_texture_upload_telemetry(logicalFrame, timing.createTexture, timing.createView,
                                                    conversionDuration, ref.gxFormat != InvalidTextureFormat,
                                                    sourceBytes, uploadBytes, writeCount,
@@ -197,9 +205,10 @@ TextureHandle new_static_texture_2d(uint32_t width, uint32_t height, uint32_t mi
           .bytesPerRow = bytesPerRow,
           .rowsPerImage = heightBlocks,
       };
-      const auto writeStarted = std::chrono::steady_clock::now();
+      const auto writeStarted = traceCosts ? std::chrono::steady_clock::now()
+                                           : std::chrono::steady_clock::time_point{};
       g_queue.WriteTexture(&dstView, data.data() + offset, dataSize, &dataLayout, &physicalSize);
-      writeDuration += std::chrono::steady_clock::now() - writeStarted;
+      if (traceCosts) writeDuration += std::chrono::steady_clock::now() - writeStarted;
       uploadBytes += dataSize;
       ++writeCount;
     }

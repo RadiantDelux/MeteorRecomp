@@ -1,4 +1,5 @@
 #pragma once
+#include "host_stall_trace.h"
 
 #include "settings_overlay.h"
 #include "runtime_config.h"
@@ -129,7 +130,14 @@ inline void ApplyPendingMkwDynamicAspectSurface() {
 }
 
 inline bool BeginAuroraFrame() {
-    if (!aurora_begin_frame()) {
+    const HostStallTrace trace("frame-begin");
+    // Every runtime call site reaches this immediately after
+    // UpdateAuroraAndProcessEvents(). aurora_update()/SDL_PollEvent already
+    // services the window queue, so pumping SDL again inside begin_frame was
+    // redundant and occasionally cost tens of milliseconds on Windows HID/
+    // window events. Keep the generic Aurora entry point unchanged for other
+    // frontends; this runtime uses the explicit post-update fast path.
+    if (!aurora_begin_frame_after_update()) {
         return false;
     }
     ApplyPendingMkwDynamicAspectSurface();
@@ -138,5 +146,6 @@ inline bool BeginAuroraFrame() {
 
 // Poll Aurora events and update cached window/framebuffer dimensions.
 inline void UpdateAuroraAndProcessEvents() {
+    const HostStallTrace trace("window-events");
     ProcessAuroraEvents(aurora_update());
 }

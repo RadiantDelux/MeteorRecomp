@@ -9,6 +9,7 @@
 #include "platform/host_platform.h"
 #include "runtime_log.h"
 #include "recomp_mod_loader.h"
+#include "interpolation_cadence.h"
 
 #include <dolphin/vi.h>
 #include <dolphin/gx/GXAurora.h>
@@ -19,6 +20,7 @@
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <iostream>
 #include <mutex>
 #include <thread>
@@ -184,6 +186,7 @@ void SleepPreciselyUntil(Clock::time_point deadline, bool finishWithSpin = false
     if (now >= deadline) {
         return;
     }
+    const HostStallTrace trace("timer-wait", deadline - now + 8ms);
     const auto timerDeadline =
         finishWithSpin && deadline - now > spinWindow ? deadline - spinWindow : deadline;
 #if defined(_WIN32)
@@ -360,11 +363,6 @@ static std::atomic<bool> s_presentSequenceActive{false};
 // was sealed. This is host presentation bookkeeping only; it never changes the
 // guest VI counter or pacing decisions.
 static std::atomic<uint32_t> s_lastProducerRetraceCount{~0u};
-// Last VI retrace slot already covered by a queued 30 -> 60 interpolation
-// group. When a 30 Hz producer seals at retrace N, Aurora schedules its
-// midpoint/native pair for N+1/N+2, so the repeat-scanout fallback must not
-// enqueue a duplicate old latch for N+2. Host presentation bookkeeping only.
-static std::atomic<uint32_t> s_interpolationCoveredThroughRetrace{0u};
 // A retrace delivered from the middle of native GX work must not re-enter
 // Aurora/window code. Coalesce its host scanout request here and consume it at
 // the next safe presentation boundary after the interrupt-style callback path
@@ -544,7 +542,6 @@ void AdvanceRetrace(CpuContext* ctx, Clock::time_point retraceStamp, bool servic
         WriteGuestStateLocked();
     }
 
-
     // Wake up threads sleeping on the VI retrace queue (VIWaitForRetrace).
     // The retrace count has been incremented and written to guest memory.
     if (ctx && g_viGuestLayout.retraceQueue) {
@@ -620,8 +617,7 @@ void AdvanceRetrace(CpuContext* ctx, Clock::time_point retraceStamp, bool servic
     // still never enters GX, frame begin/end, window service, or guest callbacks.
     if (viOwnsScanout && (!isBlack || serviceAurora)) {
         RequestViScanout(retraceStamp, retraceInterval);
-    } else if (!viOwnsScanout && !isBlack && !producerUpdatedPreviousInterval &&
-               retraceValue > s_interpolationCoveredThroughRetrace.load(std::memory_order_acquire)) {
+    } else if (!viOwnsScanout && !isBlack && !producerUpdatedPreviousInterval) {
         // Real VI keeps scanning the last latched XFB even when the CPU spends a
         // retrace (or several) in a retail polling loop and GX produces nothing.
         // Repeat only the immutable host snapshot: no GX work, guest callback,
@@ -851,18 +847,66 @@ uint32_t s_lastPacedRetraceCount = ~0u;
 // measurement lets target60 recognize the 30 Hz cadence without altering the
 // guest VI clock or callbacks. Producer-thread only.
 Clock::time_point s_lastProducerPresentTime{};
-// Small hysteresis for target60 source-cadence classification. BT3 battle
-// simulation is 30 Hz, but host delivery occasionally quantizes one source step
-// short/long around the VI grid. A single jittery sample must not tear down the
-// interpolation history; sustained native-60 delivery still exits immediately.
-uint32_t s_target60CadenceConfidence = 0;
-uint32_t s_target60NativeLikeStreak = 0;
+InterpolationCadence s_target60Cadence;
 
-// Last presentation anchor handed to Aurora, in nanoseconds on the VI retrace
-// grid. Guarantees consecutive sealed frames never share an anchor (see the
-// comment at the stamping site). Producer-thread only, like the memo above.
-uint64_t s_lastPresentAnchorNanos = 0;
-bool s_lastPresentAnchorWasThirtyToSixty = false;
+bool TraceNativeFrameTiming() {
+    static const bool enabled = std::getenv("METEOR_TRACE_FRAME_TIMING") != nullptr;
+    return enabled;
+}
+
+uint64_t ProducerCpuNanos() {
+#if defined(_WIN32)
+    FILETIME created{}, exited{}, kernel{}, user{};
+    if (GetThreadTimes(GetCurrentThread(), &created, &exited, &kernel, &user)) {
+        const uint64_t ticks = (uint64_t(kernel.dwHighDateTime) << 32 | kernel.dwLowDateTime) +
+                               (uint64_t(user.dwHighDateTime) << 32 | user.dwLowDateTime);
+        return ticks * 100u;
+    }
+#endif
+    return 0;
+}
+
+void RecordNativeFrameTiming(Clock::time_point started, Clock::time_point submitted,
+                            Clock::time_point paced, Clock::time_point prepared, uint64_t cpu) {
+    struct Window {
+        Clock::time_point first{}, previous{};
+        uint64_t previousCpu = 0, cpu = 0;
+        uint32_t frames = 0;
+        double submit = 0, pace = 0, prepare = 0, maxGap = 0;
+    };
+    static Window w;
+    const auto ms = [](auto duration) { return std::chrono::duration<double, std::milli>(duration).count(); };
+    if (w.previous != Clock::time_point{}) {
+        const double gap = ms(started - w.previous);
+        w.maxGap = std::max(w.maxGap, gap);
+        if (gap > 50.0) {
+            // GetThreadTimes has coarse accounting granularity. Compare this
+            // CPU estimate with the wall-time scopes, not as an exact profiler.
+            RT_LOG(RT_TAG_RUNTIME) << "Native hitch: frame=" << g_gxFrameCount
+                << " gap=" << gap << "ms cpu="
+                << (w.previousCpu != 0 ? double(cpu - w.previousCpu) / 1e6 : 0)
+                << "ms endNs=" << std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    started.time_since_epoch()).count() << std::endl;
+        }
+    }
+    if (w.first == Clock::time_point{}) w.first = started;
+    if (w.previousCpu != 0) w.cpu += cpu - w.previousCpu;
+    w.previous = started;
+    w.previousCpu = cpu;
+    ++w.frames;
+    w.submit += ms(submitted - started);
+    w.pace += ms(paced - submitted);
+    w.prepare += ms(prepared - paced);
+    if (prepared - w.first < 1s) return;
+    RT_LOG(RT_TAG_RUNTIME) << "Native frame timing: frames=" << w.frames
+        << " guestCpuAvg=" << (double(w.cpu) / 1e6 / w.frames)
+        << "ms submitAvg=" << w.submit / w.frames
+        << "ms paceAvg=" << w.pace / w.frames
+        << "ms prepareAvg=" << w.prepare / w.frames
+        << "ms maxSourceGap=" << w.maxGap
+        << "ms interp=" << aurora_get_frame_interpolation_fps() << std::endl;
+    w = Window{.first = prepared, .previous = started, .previousCpu = cpu};
+}
 
 // Sleeps to the same VI retrace boundary VIWaitForRetrace targets, servicing alarms every 1 ms so audio
 // DMA and timers keep running, then delivers that retrace so guest logic starts exactly on the grid.
@@ -901,6 +945,9 @@ void VI_HLE_PresentFrame(bool presentedXfb, bool paceToRetrace) {
     struct SequenceGuard {
         ~SequenceGuard() { s_presentSequenceActive.store(false, std::memory_order_release); }
     } sequenceGuard;
+    const bool traceTiming = paceToRetrace && TraceNativeFrameTiming();
+    const auto frameStarted = traceTiming ? Clock::now() : Clock::time_point{};
+    const uint64_t frameCpu = traceTiming ? ProducerCpuNanos() : 0;
     Clock::time_point paceDeadline{};
     bool paceThisFrame = false;
     if (paceToRetrace) {
@@ -920,9 +967,6 @@ void VI_HLE_PresentFrame(bool presentedXfb, bool paceToRetrace) {
             retracesElapsed = retraceCount - s_lastPacedRetraceCount;
             interpolationFps = aurora_get_frame_interpolation_fps();
             thirtyToSixtyMode = interpolationFps == 60;
-            bool wallClockThirtyHz = false;
-            bool native60Like = false;
-            bool hardCadenceStall = false;
             if (thirtyToSixtyMode && s_lastProducerPresentTime != Clock::time_point{}) {
                 const uint64_t producerDeltaNanos = static_cast<uint64_t>(
                     std::max<int64_t>(0, std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -930,70 +974,16 @@ void VI_HLE_PresentFrame(bool presentedXfb, bool paceToRetrace) {
                                               .count()));
                 const uint64_t viNanos = static_cast<uint64_t>(
                     std::chrono::duration_cast<std::chrono::nanoseconds>(g_vi.retraceInterval).count());
-                // Healthy 30 Hz sits near 2*VI, but host scheduling can deliver
-                // one source step anywhere from roughly 1.25 to 3.25 VI without
-                // the guest simulation cadence changing. Native-60 UI remains
-                // near 1 VI, while >=3.5 VI is treated as a real discontinuity.
-                wallClockThirtyHz = viNanos != 0 &&
-                                     producerDeltaNanos >= (viNanos * 5u) / 4u &&
-                                     producerDeltaNanos < (viNanos * 13u) / 4u;
-                native60Like = viNanos != 0 && producerDeltaNanos < (viNanos * 5u) / 4u;
-                hardCadenceStall = viNanos != 0 && producerDeltaNanos >= (viNanos * 7u) / 2u;
-            }
-            if (thirtyToSixtyMode) {
-                const bool directThirtyHz = retracesElapsed == 2 || wallClockThirtyHz;
-                if (directThirtyHz) {
-                    s_target60CadenceConfidence = std::min<uint32_t>(4u, s_target60CadenceConfidence + 2u);
-                    s_target60NativeLikeStreak = 0;
-                } else if (hardCadenceStall) {
-                    s_target60CadenceConfidence = 0;
-                    s_target60NativeLikeStreak = 0;
-                } else if (native60Like) {
-                    ++s_target60NativeLikeStreak;
-                    if (s_target60NativeLikeStreak >= 2u) {
-                        s_target60CadenceConfidence = 0;
-                    } else if (s_target60CadenceConfidence != 0) {
-                        --s_target60CadenceConfidence;
-                    }
-                } else if (s_target60CadenceConfidence != 0) {
-                    --s_target60CadenceConfidence;
-                }
-                interpolationCadenceEligible =
-                    directThirtyHz ||
-                    (!hardCadenceStall && s_target60CadenceConfidence >= 2u &&
-                     s_target60NativeLikeStreak < 2u);
+                interpolationCadenceEligible = s_target60Cadence.Observe(producerDeltaNanos, viNanos);
             } else {
-                s_target60CadenceConfidence = 0;
-                s_target60NativeLikeStreak = 0;
-                interpolationCadenceEligible = retracesElapsed <= 1;
+                s_target60Cadence.Reset();
+                interpolationCadenceEligible = !thirtyToSixtyMode && retracesElapsed <= 1;
             }
             // Publish the producer/retrace relationship under the same lock as
             // the count read. Otherwise AdvanceRetrace can increment the count
             // between the read and the atomic store and enqueue an unnecessary
             // repeat for a frame that was just produced.
             s_lastProducerRetraceCount.store(retraceCount, std::memory_order_release);
-            // The cadence-gated 30 -> 60 group owns its midpoint/native slots,
-            // plus one physical-VI grace slot. Aurora can slide a late group by
-            // one VI; without the grace an old-frame repeat can be queued for
-            // that same future slot before the delayed midpoint reaches the
-            // presenter. Holding the last scanout for one extra retrace is
-            // visually equivalent to that repeat and avoids the stale present.
-            const uint32_t coveredThrough =
-                s_interpolationCoveredThroughRetrace.load(std::memory_order_acquire);
-            if (thirtyToSixtyMode && interpolationCadenceEligible) {
-                s_interpolationCoveredThroughRetrace.store(
-                    std::max(coveredThrough, retraceCount + 3u), std::memory_order_release);
-            } else if (hardCadenceStall) {
-                // A genuine long source gap has no pending midpoint group worth
-                // protecting. Release stale grace immediately so VI can repeat
-                // the last actually presented image rather than leaving a hole.
-                s_interpolationCoveredThroughRetrace.store(0u, std::memory_order_release);
-            } else if (retraceCount > coveredThrough) {
-                // Expire old coverage only after its final scheduled retrace has
-                // passed; an intervening ineligible producer frame must not reopen
-                // a repeat slot already owned by an earlier interpolation group.
-                s_interpolationCoveredThroughRetrace.store(0u, std::memory_order_release);
-            }
             baseNanos = static_cast<uint64_t>(
                 std::chrono::duration_cast<std::chrono::nanoseconds>(
                     g_vi.lastRetrace.time_since_epoch())
@@ -1012,59 +1002,24 @@ void VI_HLE_PresentFrame(bool presentedXfb, bool paceToRetrace) {
         s_lastProducerPresentTime = producerPresentNow;
         // aurora_report_producer_paced needs a different signal than the pace-wait above. Normal
         // high-rate interpolation assumes a 60 Hz producer, where <=1 retrace elapsed is healthy.
-        // The explicit 60 FPS mode is 30 -> 60: two retraces is the direct signal, while the
-        // producer wall-clock window absorbs 1/3-retrace phase quantization around the same ~33 ms
-        // cadence. Native 60 Hz UI and real stalls remain ineligible. This changes presentation
-        // sampling only; guest simulation/VI callback timing is untouched.
+        // The explicit 60 FPS mode requires a sustained ~30 Hz source cadence;
+        // one missed native-60 frame must not enable midpoint generation. This
+        // changes presentation only; guest simulation/VI callbacks are untouched.
         aurora_report_producer_paced(interpolationCadenceEligible);
-        // Stamp the sealed frame's presentation schedule so Aurora paces interpolated slots against
-        // this same VI timeline. Anchor to the NEXT retrace boundary, not the period just produced,
-        // since slots anchored to the current period would already be expired by seal time. Encoding
-        // overruns are corrected by sliding the whole slot group forward onto a later boundary of this
-        // same grid, so this stays the single cadence authority. Anchors must also be strictly
-        // monotonic. A target60 group owns two physical VI slots, so consecutive target60 first
-        // anchors also stay two VI periods apart; otherwise a wall-clock-qualified 1-retrace sample
-        // could place its midpoint on the previous group's native slot and burst-present.
-        const uint64_t retraceIntervalNanos = intervalNanos;
-        uint64_t anchorNanos = baseNanos + retraceIntervalNanos;
-        if (s_lastPresentAnchorNanos != 0) {
-            const bool currentThirtyToSixty = thirtyToSixtyMode && interpolationCadenceEligible;
-            const uint64_t minimumSpacing =
-                currentThirtyToSixty && s_lastPresentAnchorWasThirtyToSixty
-                    ? retraceIntervalNanos * 2u
-                    : retraceIntervalNanos;
-            const uint64_t minimumAnchor = s_lastPresentAnchorNanos + minimumSpacing;
-            if (anchorNanos < minimumAnchor) {
-                anchorNanos = minimumAnchor;
-            }
-        }
-        s_lastPresentAnchorNanos = anchorNanos;
-        s_lastPresentAnchorWasThirtyToSixty =
-            thirtyToSixtyMode && interpolationCadenceEligible;
-        // A 30 Hz source frame spans two VI periods. Keep the first interpolated slot on the next
-        // VI boundary, but subdivide the full two-retrace source interval so the midpoint and native
-        // frame land 16.7 ms apart at 60 Hz. Native 60 Hz/menu frames keep the ordinary one-period
-        // schedule and are cadence-gated out of interpolation above.
-        const uint64_t presentationIntervalNanos =
-            thirtyToSixtyMode && interpolationCadenceEligible
-                ? retraceIntervalNanos * 2u
-                : retraceIntervalNanos;
-        aurora_set_present_schedule(anchorNanos, presentationIntervalNanos);
+        // Stamp the physical VI grid only. Aurora knows the actual inserted-slot
+        // count after seal and owns group spacing/catch-up. Predicting a two-VI
+        // span here delayed 2D frames with no midpoint and accumulated latency.
+        aurora_set_present_schedule(baseNanos + intervalNanos, intervalNanos);
     } else {
         // Retrace-context presents (VI black, boot) have no display period of
-        // their own to subdivide; present as soon as the frame is ready. The
-        // schedule grid is gone, so the anchor cursor must not constrain the
-        // next paced frame.
-        s_lastPresentAnchorNanos = 0;
-        s_lastPresentAnchorWasThirtyToSixty = false;
+        // their own to subdivide; present as soon as the frame is ready.
         s_lastProducerPresentTime = {};
-        s_target60CadenceConfidence = 0;
-        s_target60NativeLikeStreak = 0;
-        s_interpolationCoveredThroughRetrace.store(0u, std::memory_order_release);
+        s_target60Cadence.Reset();
         aurora_set_present_schedule(0, 0);
     }
 
     aurora_end_frame();
+    const auto frameSubmitted = traceTiming ? Clock::now() : Clock::time_point{};
     // Do not join the asynchronous frame worker here. Its cycle deliberately
     // waits for the producer to authorize preparation of the next frame before
     // reaching DONE, so a wait between end_frame() and that next begin would
@@ -1076,6 +1031,7 @@ void VI_HLE_PresentFrame(bool presentedXfb, bool paceToRetrace) {
         std::lock_guard<std::mutex> lock(g_viMutex);
         s_lastPacedRetraceCount = g_vi.retraceCount;
     }
+    const auto framePaced = traceTiming ? Clock::now() : Clock::time_point{};
     settings_overlay::AdvancePresentedFrame();
     g_auroraFrameActive.store(false, std::memory_order_release);
     g_auroraFrameHadWork.store(false, std::memory_order_release);
@@ -1091,6 +1047,7 @@ void VI_HLE_PresentFrame(bool presentedXfb, bool paceToRetrace) {
             g_auroraFrameActive.store(true, std::memory_order_release);
         }
     }
+    if (traceTiming) RecordNativeFrameTiming(frameStarted, frameSubmitted, framePaced, Clock::now(), frameCpu);
 }
 
 static bool TryPrepareRamXfbPresentSource(uint32_t xfbAddr, uint32_t width, uint32_t height) {

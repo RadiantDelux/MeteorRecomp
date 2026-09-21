@@ -626,8 +626,8 @@ void SubmitIndexedAttribute(GXAttr attr, uint32_t index) {
         const int step = GetCompSizeBytes(fmt.type);
         uint32_t addr = baseAddr;
         for (int i = 0; i < count; ++i, addr += step) {
-            comps[i] = ReadArrayComp(addr, fmt.type, fmt.frac);
             rawComps[i] = ReadArrayRawComp(addr, fmt.type);
+            comps[i] = ConvertCompToFloat(rawComps[i], fmt.type, fmt.frac);
         }
         SubmitAttribute(attr, comps, fmt, rawComps);
         break;
@@ -637,8 +637,8 @@ void SubmitIndexedAttribute(GXAttr attr, uint32_t index) {
         const int step = GetCompSizeBytes(fmt.type);
         uint32_t addr = baseAddr;
         for (int i = 0; i < count; ++i, addr += step) {
-            comps[i] = ReadArrayComp(addr, fmt.type, fmt.frac);
             rawComps[i] = ReadArrayRawComp(addr, fmt.type);
+            comps[i] = ConvertCompToFloat(rawComps[i], fmt.type, fmt.frac);
         }
         SubmitAttribute(attr, comps, fmt, rawComps);
         break;
@@ -662,8 +662,8 @@ void SubmitIndexedAttribute(GXAttr attr, uint32_t index) {
         const int step = GetCompSizeBytes(fmt.type);
         uint32_t addr = baseAddr;
         for (int i = 0; i < count; ++i, addr += step) {
-            comps[i] = ReadArrayComp(addr, fmt.type, fmt.frac);
             rawComps[i] = ReadArrayRawComp(addr, fmt.type);
+            comps[i] = ConvertCompToFloat(rawComps[i], fmt.type, fmt.frac);
         }
         SubmitAttribute(attr, comps, fmt, rawComps);
         break;

@@ -26,6 +26,7 @@
 #include <ranges>
 
 #include <absl/container/flat_hash_map.h>
+#include <absl/container/flat_hash_set.h>
 #include <magic_enum.hpp>
 
 #include "tracy/Tracy.hpp"
@@ -1198,7 +1199,9 @@ void expire_bind_group_cache(uint32_t logicalFrame) noexcept {
   }
 
   ZoneScoped;
-  const auto started = std::chrono::steady_clock::now();
+  const bool traceCosts = aurora::frame_cost_telemetry_enabled();
+  const auto started = traceCosts ? std::chrono::steady_clock::now()
+                                  : std::chrono::steady_clock::time_point{};
   const size_t before = g_cachedBindGroups.size();
   for (auto it = g_cachedBindGroups.begin(); it != g_cachedBindGroups.end();) {
     if (g_frameIndex - it->second.lastUsedFrame > g_bindGroupCacheRetainFrames) {
@@ -1208,7 +1211,7 @@ void expire_bind_group_cache(uint32_t logicalFrame) noexcept {
     }
   }
   const uint32_t reclaimed = static_cast<uint32_t>(before - g_cachedBindGroups.size());
-  if (logicalFrame != UINT32_MAX && reclaimed != 0) {
+  if (traceCosts && logicalFrame != UINT32_MAX && reclaimed != 0) {
     aurora::record_bind_group_reclaim_telemetry(logicalFrame, reclaimed,
                                                 std::chrono::steady_clock::now() - started);
   }
@@ -1406,13 +1409,22 @@ bool sealed_frame_pipelines_ready(const SealedFrame& frame) noexcept {
   if (!skip_unready_pipelines()) {
     return true;
   }
+  // Target60 probes the entire sealed frame before deciding whether its
+  // midpoint may replay. Large scenes commonly reuse a small pipeline set, so
+  // avoid taking the pipeline-cache mutex once per draw for identical refs.
+  static thread_local absl::flat_hash_set<PipelineRef> checked;
+  checked.clear();
   wgpu::RenderPipeline pipeline;
   for (const auto& passInfo : frame.data().passes) {
     for (const auto& command : passInfo.commands) {
       if (command.type != CommandType::Draw || command.data.draw.type != ShaderType::GX) {
         continue;
       }
-      if (!try_pipeline(command.data.draw.gx.pipeline, pipeline)) {
+      const PipelineRef ref = command.data.draw.gx.pipeline;
+      if (!checked.insert(ref).second) {
+        continue;
+      }
+      if (!try_pipeline(ref, pipeline)) {
         return false;
       }
     }
@@ -1440,10 +1452,12 @@ void after_submit(uint32_t logicalFrame) noexcept {
   // Retire this frame's completed GPU work. Dawn only reclaims destroyed resources inside a device
   // tick, and a frame that never ticks keeps every released image and its memory for the run.
   if (g_instance) {
-    const auto started = std::chrono::steady_clock::now();
-    g_instance.ProcessEvents();
-    if (logicalFrame != UINT32_MAX) {
+    if (aurora::frame_cost_telemetry_enabled() && logicalFrame != UINT32_MAX) {
+      const auto started = std::chrono::steady_clock::now();
+      g_instance.ProcessEvents();
       aurora::record_process_events_telemetry(logicalFrame, std::chrono::steady_clock::now() - started);
+    } else {
+      g_instance.ProcessEvents();
     }
   }
 }

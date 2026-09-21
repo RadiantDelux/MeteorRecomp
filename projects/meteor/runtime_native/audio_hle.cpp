@@ -54,6 +54,7 @@ void ConfigureMeteorDspLayout()
         ai.callbackBusy = kMeteorAiCallbackBusy;
         ai.callbackStackSwitch = kMeteorAiCallbackStackSwitch;
         ai.dmaCallback = kMeteorAiDmaCallback;
+        ai.suppressStaleDmaAudio = true;
         AI_HLE_SetGuestStateLayout(ai);
 
         DspGuestStateLayout layout{};

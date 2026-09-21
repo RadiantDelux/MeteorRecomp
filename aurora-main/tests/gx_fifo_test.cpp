@@ -273,7 +273,8 @@ TEST(FrameInterpolationContract, RequiresStablePerspectiveDrawSequence) {
   EXPECT_TRUE(aurora::gx::has_interpolated_frame());
 
   EXPECT_EQ(buildFrame(info, 200, false), 0u);
-  EXPECT_TRUE(aurora::gx::has_interpolated_frame());
+  EXPECT_FALSE(aurora::gx::has_interpolated_frame());
+  EXPECT_EQ(aurora::gx::interpolated_frame_count(), 0u);
 
   aurora::gx::set_frame_interpolation_fps(240);
   EXPECT_EQ(buildFrame(info, 300, true), 0u);
@@ -308,6 +309,27 @@ TEST(FrameInterpolationContract, RequiresStablePerspectiveDrawSequence) {
   EXPECT_TRUE(aurora::gx::has_interpolated_frame());
 
   resetInterpolation();
+}
+
+TEST(FrameInterpolationContract, Native2DDoesNotReserveMidpointsAfterJitterOrSceneSwitch) {
+  using namespace aurora::gx;
+  set_frame_interpolation_fps(0);
+  begin_frame_interpolation();
+  set_frame_interpolation_fps(60);
+  const auto info = build_shader_info({});
+  BindGroupRanges ranges{};
+  const FrameInterpolationDrawIdentity identity{.combined = 910, .pipeline = 910, .texture = 1};
+  // Even when a slow menu frame looks like 30 Hz to VI, it has no perspective
+  // motion. Exercise entry, repeated jitter, a 3D scene, and return to 2D.
+  for (const bool perspective : {false, false, true, true, false, false, true}) {
+    begin_frame_interpolation();
+    build_uniform(info, 0, ranges, identity, perspective);
+    report_producer_paced(true);
+    finalize_frame_interpolation();
+    EXPECT_EQ(interpolated_frame_count(), perspective ? 1u : 0u);
+  }
+  set_frame_interpolation_fps(0);
+  begin_frame_interpolation();
 }
 
 TEST(FrameInterpolationContract, DecomposesRotationScaleAndTranslation) {

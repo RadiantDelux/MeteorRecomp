@@ -91,6 +91,9 @@ struct AiGuestStateLayout {
     uint32_t callbackBusy = 0;
     uint32_t callbackStackSwitch = 0;
     uint32_t dmaCallback = 0;
+    // Streaming titles re-arm every produced block. Keep hardware autoreload,
+    // but render an unrefreshed submission as a host playback gap after a stall.
+    bool suppressStaleDmaAudio = false;
 };
 
 struct DspGuestStateLayout {

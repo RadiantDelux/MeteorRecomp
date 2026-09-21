@@ -43,6 +43,40 @@ int main() {
         Require(!DataCacheWriteback::PublishLine(0xcc008000, contains, publish), "MMIO was published");
         Require(!DataCacheWriteback::PublishLine(0xffffffff, contains, publish), "invalid address was published");
         Require(notifications == 3, "invalid extent had a side effect");
+        const auto containsRange = [](uint32_t start, uint32_t size) {
+            const uint64_t physical = CanonicalizeGxMainRamAddress(start);
+            return physical >= 0x120000u && physical + size <= 0x140000u;
+        };
+        // Compare batched publication with the original sequence of 32-byte
+        // writebacks for every possible leading alignment and small extent.
+        for (uint32_t offset = 0; offset < 32; ++offset) {
+            for (uint32_t size = 1; size <= 512; ++size) {
+                uint32_t first = ~0u, end = 0, lines = 0;
+                for (uint32_t cursor = (base + offset) & ~31u;
+                     cursor < base + offset + size; cursor += 32) {
+                    first = std::min(first, cursor);
+                    end = cursor + 32;
+                    ++lines;
+                }
+                const auto prior = notifications;
+                Require(DataCacheWriteback::PublishRange(base + offset, size, containsRange, publish),
+                        "valid range rejected");
+                Require(last == first && length == end - first && notifications == prior + 1,
+                        "batched range differs from individual lines");
+                Require(DataCacheWriteback::RangeLineCount(base + offset, size) == lines,
+                        "wrong SDK count/return register extent");
+            }
+        }
+        const auto prior = notifications;
+        Require(DataCacheWriteback::PublishRange(base, 65536, containsRange, publish), "large range rejected");
+        Require(notifications == prior + 1 && last == base && length == 65536,
+                "large range still published per line");
+        Require(DataCacheWriteback::PublishRange(base, 0, containsRange, publish), "empty range rejected");
+        Require(!DataCacheWriteback::PublishRange(base, 0x30000, containsRange, publish), "hole needs fallback");
+        Require(!DataCacheWriteback::PublishRange(0xFFFFFFF0u, 64, containsRange, publish), "wrap needs fallback");
+        Require(!DataCacheWriteback::PublishRange(base + 1, 0xFFFFFFFFu, containsRange, publish),
+                "overflowing SDK count needs fallback");
+        Require(notifications == prior + 1, "empty/invalid range published data");
         std::puts("PASS: DC writeback alignment, source generation, aliases, invalid ranges, byte preservation");
         return 0;
     } catch (const std::exception& e) {

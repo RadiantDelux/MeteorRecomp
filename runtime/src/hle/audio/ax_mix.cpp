@@ -1318,12 +1318,17 @@ private:
                                 m_bus[kBusAuxCL].data(), kAxSamplesPerFrame);
         }
         std::array<int16_t, kAxSamplesPerFrame * 2> pcm{};
+        const uint64_t diagSerial = ++m_diagOutputSerial;
+        static const bool traceAudio = std::getenv("METEOR_TRACE_AUDIO") != nullptr;
+        const bool traceBlock = traceAudio && (diagSerial & 0xFFu) == 0u;
         int32_t diagPeak = 0;
         for (uint32_t i = 0; i < kAxSamplesPerFrame; ++i) {
             const int16_t left = ClampS16((static_cast<int64_t>(m_bus[kBusMainL][i]) * ramp[i]) >> 15);
             const int16_t right = ClampS16((static_cast<int64_t>(m_bus[kBusMainR][i]) * ramp[i]) >> 15);
-            diagPeak = std::max(diagPeak, std::abs(static_cast<int32_t>(left)));
-            diagPeak = std::max(diagPeak, std::abs(static_cast<int32_t>(right)));
+            if (traceBlock) {
+                diagPeak = std::max(diagPeak, std::abs(static_cast<int32_t>(left)));
+                diagPeak = std::max(diagPeak, std::abs(static_cast<int32_t>(right)));
+            }
             // OUTPUT is destructive on the DSP: the main buses are left holding the ramped,
             // clamped result (not the wide accumulator) so any mixing after it sees that value.
             m_bus[kBusMainL][i] = left;
@@ -1344,8 +1349,7 @@ private:
                 MixWrite16(lrAddr + i * 4 + 2, static_cast<uint16_t>(pcm[i * 2 + 1]));
             }
         }
-        const uint64_t diagSerial = ++m_diagOutputSerial;
-        if ((diagSerial & 0xFFu) == 0u) {
+        if (traceBlock) {
             RT_LOG(RT_TAG_AUDIO)
                 << "AX mix: frame=" << diagSerial
                 << " pb=" << m_diagPbCount

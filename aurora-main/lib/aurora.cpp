@@ -12,6 +12,7 @@
 
 #include "input.hpp"
 #include "internal.hpp"
+#include "presentation_schedule.hpp"
 #include "window.hpp"
 
 #include <SDL3/SDL_filesystem.h>
@@ -296,7 +297,7 @@ void record_successful_present(bool, uint32_t logicalFrame, bool duplicated) noe
     g_presentTimingSampleCount = std::min(g_presentTimingSampleCount + 1, g_presentTimingSamples.size());
     ++g_totalPresentCount;
   }
-  if (!duplicated) {
+  if (!duplicated && frame_cost_telemetry_enabled()) {
     record_motion_cost(logicalFrame, now, take_frame_cost_telemetry(logicalFrame));
   }
 }
@@ -1251,6 +1252,7 @@ struct PresenterState {
   std::condition_variable cv;
   std::thread thread;
   std::deque<PresentationJob> jobs;
+  PresentClock::time_point producerCoveredUntil{};
   bool started = false;
   bool stop = false;
   bool presenting = false;
@@ -1303,6 +1305,7 @@ void ensure_presenter_started() {
   }
   g_presenter.stop = false;
   g_presenter.presenting = false;
+  g_presenter.producerCoveredUntil = {};
   g_presenter.thread = std::thread(presenter_main);
   g_presenter.started = true;
   g_presenterStarted.store(true, std::memory_order_release);
@@ -1328,6 +1331,22 @@ void enqueue_presentations(std::vector<PresentationJob>&& jobs) {
   if (g_presenter.stop) {
     return;
   }
+  // Only actual sealed producer jobs reserve scanout slots. Predicting coverage
+  // from source timing in VI suppressed ordinary 2D scanout on random hitches.
+  for (const auto& job : jobs) {
+    if (!job.viRepeat && job.presentAt != PresentClock::time_point{}) {
+      const auto covered = job.presentAt +
+          (jobs.front().interpolated ? std::chrono::nanoseconds(6'500'000) : std::chrono::nanoseconds(0));
+      g_presenter.producerCoveredUntil = std::max(g_presenter.producerCoveredUntil, covered);
+    }
+  }
+  const auto redundantRepeat = [&](const PresentationJob& job) {
+    return job.viRepeat && job.presentAt != PresentClock::time_point{} &&
+           job.presentAt <= g_presenter.producerCoveredUntil;
+  };
+  std::erase_if(g_presenter.jobs, redundantRepeat);
+  std::erase_if(jobs, redundantRepeat);
+  if (jobs.empty()) return;
   if (g_presenter.jobs.size() + jobs.size() > maximumQueuedJobs) {
     // Presentation is a real-time stream, not a lossless queue: waiting for room couples the guest
     // and audio clocks to a blocked Present(). Keep the newest group and drop obsolete images.
@@ -1589,7 +1608,8 @@ void seal_frame_locked(gfx::SealedFrame& sealedFrame, SealedFrameContext& ctx) {
   ctx.thirtyToSixtySchedule =
       gx::frame_interpolation_fps() == 60 && ctx.interpolatedFrameCount == 1;
   ctx.scheduleBaseNanos = g_presentScheduleBaseNanos.load(std::memory_order_acquire);
-  ctx.scheduleIntervalNanos = g_presentScheduleIntervalNanos.load(std::memory_order_acquire);
+  ctx.scheduleIntervalNanos = presentation_span(
+      g_presentScheduleIntervalNanos.load(std::memory_order_acquire), ctx.thirtyToSixtySchedule);
   ctx.viScanoutMode = g_viScanoutMode.load(std::memory_order_acquire);
   const auto windowSize = window::get_window_size();
   ctx.snapshotWidth = (std::max)(windowSize.native_fb_width, 1u);
@@ -1620,19 +1640,13 @@ std::vector<PresentationJob> encode_sealed_frame(gfx::SealedFrame& sealedFrame, 
   };
   // Absolute slot deadlines: slot k of jobCount presents at base + k * interval / jobCount. With
   // interpolation off, pace to the boundary that just passed plus 6.5 ms; late frames free-run.
-  constexpr uint64_t kNativePresentOffsetNanos = 6'500'000;
   const uint32_t presentationJobCount = ctx.interpolatedFrameCount + 1;
   const auto slotPresentDeadline = [&](uint32_t slot) -> PresentClock::time_point {
     if (ctx.scheduleBaseNanos == 0 || ctx.scheduleIntervalNanos == 0) {
       return {};
     }
-    if (!ctx.interpolationActive) {
-      return PresentClock::time_point{std::chrono::nanoseconds{
-          ctx.scheduleBaseNanos - ctx.scheduleIntervalNanos + kNativePresentOffsetNanos}};
-    }
-    const uint64_t offsetNanos =
-        (ctx.scheduleIntervalNanos * static_cast<uint64_t>(slot)) / presentationJobCount;
-    return PresentClock::time_point{std::chrono::nanoseconds{ctx.scheduleBaseNanos + offsetNanos}};
+    return PresentClock::time_point{std::chrono::nanoseconds{presentation_deadline(
+        ctx.scheduleBaseNanos, ctx.scheduleIntervalNanos, ctx.interpolatedFrameCount, slot)}};
   };
   std::vector<PresentationJob> presentationJobs;
   presentationJobs.reserve(presentationJobCount);
@@ -1879,18 +1893,50 @@ void record_frame_telemetry() {
 
 // One complete frame-worker cycle. The scene encode only leaves the renderer mutex when
 // interpolation actually inserts slots; otherwise both phases publish together.
+void trace_frame_worker_timing(double sealMs, double encodeMs, double prepareMs,
+                               const SealedFrameContext& ctx) {
+  struct Window {
+    PresentClock::time_point start = PresentClock::now();
+    double seal = 0, encode = 0, prepare = 0, maxWork = 0;
+    uint32_t frames = 0, midpoints = 0;
+  };
+  static Window w;
+  w.seal += sealMs;
+  w.encode += encodeMs;
+  w.prepare += prepareMs;
+  w.maxWork = std::max(w.maxWork, sealMs + encodeMs + prepareMs);
+  ++w.frames;
+  w.midpoints += ctx.interpolatedFrameCount;
+  if (PresentClock::now() - w.start < std::chrono::seconds(1)) return;
+  AuroraFrameInterpolationDiagnostics d{};
+  gx::get_frame_interpolation_diagnostics(d);
+  Log.info("Render frame timing: frames={} sealAvg={:.3f}ms encodeAvg={:.3f}ms prepareAvg={:.3f}ms "
+           "maxWork={:.3f}ms midpoints={} perspective={} matches={}",
+           w.frames, w.seal / w.frames, w.encode / w.frames, w.prepare / w.frames,
+           w.maxWork, w.midpoints, d.candidates, d.matches);
+  w = {};
+}
+
 bool run_frame_worker_cycle(gfx::SealedFrame& sealedFrame) noexcept {
   ZoneScopedN("Frame worker cycle");
   webgpu::fail_if_device_lost();
   SealedFrameContext ctx;
   std::vector<PresentationJob> presentationJobs;
   bool overlapEncode = false;
+  static const bool traceTiming = std::getenv("METEOR_TRACE_FRAME_TIMING") != nullptr;
+  const auto tick = [] { return traceTiming ? PresentClock::now() : PresentClock::time_point{}; };
+  const auto ms = [](auto duration) { return std::chrono::duration<double, std::milli>(duration).count(); };
+  double sealMs = 0, encodeMs = 0;
   {
     std::lock_guard gpuLock(g_rendererGpuMutex);
+    const auto beforeSeal = tick();
     seal_frame_locked(sealedFrame, ctx);
+    const auto afterSeal = tick();
+    sealMs = ms(afterSeal - beforeSeal);
     overlapEncode = ctx.interpolationActive;
     if (!overlapEncode) {
       presentationJobs = encode_sealed_frame(sealedFrame, ctx);
+      encodeMs = ms(tick() - afterSeal);
     }
   }
   if (!overlapEncode) {
@@ -1909,9 +1955,11 @@ bool run_frame_worker_cycle(gfx::SealedFrame& sealedFrame) noexcept {
   // Preparing the next frame belongs to the SEALED phase: without a fresh pass 0 and mapped
   // staging buffers the producer's drain has nowhere to put its commands.
   bool imguiNewFrameOwed = false;
+  const auto beforePrepare = tick();
   const bool prepared = begin_frame_impl(
       false, overlapEncode ? ImGuiFramePolicy::Deferred : ImGuiFramePolicy::Immediate,
       &imguiNewFrameOwed);
+  const double prepareMs = ms(tick() - beforePrepare);
 
   {
     std::lock_guard lock(g_frameWorker.mutex);
@@ -1926,7 +1974,9 @@ bool run_frame_worker_cycle(gfx::SealedFrame& sealedFrame) noexcept {
   if (overlapEncode) {
     // Mutex-free: the producer drains and records the next frame in parallel, taking the renderer
     // mutex per drain, and this phase never takes it.
+    const auto beforeEncode = tick();
     presentationJobs = encode_sealed_frame(sealedFrame, ctx);
+    encodeMs = ms(tick() - beforeEncode);
     publish_presentations(std::move(presentationJobs), ctx.interpolationActive);
     if (imguiNewFrameOwed) {
       // Safe only now: every slot has replayed this frame's ImGui draw lists.
@@ -1941,6 +1991,7 @@ bool run_frame_worker_cycle(gfx::SealedFrame& sealedFrame) noexcept {
   }
 
   record_frame_telemetry();
+  if (traceTiming) trace_frame_worker_timing(sealMs, encodeMs, prepareMs, ctx);
   return true;
 }
 #endif
@@ -2070,8 +2121,60 @@ void end_frame() noexcept {
 }
 } // namespace
 
+bool frame_cost_telemetry_enabled() noexcept {
+  static const bool enabled = std::getenv("METEOR_TRACE_FRAME_TIMING") != nullptr;
+  return enabled;
+}
+
 void wait_for_frame_worker() noexcept {
   wait_for_frame_worker_private(FrameWorkerPhase::Done);
+}
+
+bool begin_frame_after_update() noexcept {
+#ifdef AURORA_ENABLE_GX
+  webgpu::fail_if_device_lost();
+#endif
+  if (!frame_worker_requested()) {
+    return begin_frame_impl(false);
+  }
+
+  ensure_frame_worker_started();
+  bool waitForSurfacePreparation = false;
+#ifdef AURORA_ENABLE_GX
+  waitForSurfacePreparation =
+      !window::is_presentable() || !g_surface ||
+      window::native_resize_pending() || window::is_paused() ||
+      !window::native_window_size_matches(
+          webgpu::g_graphicsConfig.surfaceConfiguration.width,
+          webgpu::g_graphicsConfig.surfaceConfiguration.height);
+#endif
+  bool workerPreparationPending = false;
+  {
+    std::lock_guard lock(g_frameWorker.mutex);
+    if (!g_frameWorker.ready.load(std::memory_order_acquire)) {
+      g_frameWorker.prepareAllowed = true;
+      g_frameWorker.cv.notify_one();
+      if (!waitForSurfacePreparation) return true;
+      workerPreparationPending = true;
+    } else if (g_frameWorker.framePrepared) {
+      return true;
+    }
+  }
+  if (workerPreparationPending) {
+    wait_for_frame_worker_private(FrameWorkerPhase::Done);
+    std::lock_guard lock(g_frameWorker.mutex);
+    return g_frameWorker.framePrepared;
+  }
+  {
+    std::lock_guard lock(g_frameWorker.mutex);
+    if (g_frameWorker.framePrepared) return true;
+  }
+  const bool prepared = begin_frame_impl(false);
+  {
+    std::lock_guard lock(g_frameWorker.mutex);
+    g_frameWorker.framePrepared = prepared;
+  }
+  return prepared;
 }
 std::chrono::nanoseconds wait_for_frame_worker_sealed() noexcept {
   if (g_frameWorker.sealed.load(std::memory_order_acquire)) {
@@ -2095,7 +2198,7 @@ void record_static_texture_upload_telemetry(uint32_t logicalFrame,
                                             uint64_t uploadBytes,
                                             uint32_t writeCount,
                                             std::chrono::nanoseconds writeTexture) noexcept {
-  if (logicalFrame == UINT32_MAX) {
+  if (!frame_cost_telemetry_enabled() || logicalFrame == UINT32_MAX) {
     return;
   }
   std::lock_guard lock(g_frameCostTelemetryMutex);
@@ -2114,7 +2217,7 @@ void record_static_texture_upload_telemetry(uint32_t logicalFrame,
 
 void record_bind_group_reclaim_telemetry(uint32_t logicalFrame, uint32_t reclaimed,
                                          std::chrono::nanoseconds duration) noexcept {
-  if (logicalFrame == UINT32_MAX || reclaimed == 0) {
+  if (!frame_cost_telemetry_enabled() || logicalFrame == UINT32_MAX || reclaimed == 0) {
     return;
   }
   std::lock_guard lock(g_frameCostTelemetryMutex);
@@ -2125,7 +2228,7 @@ void record_bind_group_reclaim_telemetry(uint32_t logicalFrame, uint32_t reclaim
 
 void record_scene_submit_telemetry(uint32_t logicalFrame, std::chrono::nanoseconds finish,
                                    std::chrono::nanoseconds submit) noexcept {
-  if (logicalFrame == UINT32_MAX) {
+  if (!frame_cost_telemetry_enabled() || logicalFrame == UINT32_MAX) {
     return;
   }
   std::lock_guard lock(g_frameCostTelemetryMutex);
@@ -2137,7 +2240,7 @@ void record_scene_submit_telemetry(uint32_t logicalFrame, std::chrono::nanosecon
 }
 
 void record_process_events_telemetry(uint32_t logicalFrame, std::chrono::nanoseconds duration) noexcept {
-  if (logicalFrame == UINT32_MAX) {
+  if (!frame_cost_telemetry_enabled() || logicalFrame == UINT32_MAX) {
     return;
   }
   std::lock_guard lock(g_frameCostTelemetryMutex);
@@ -2218,6 +2321,7 @@ AuroraInfo aurora_initialize(int argc, char* argv[], const AuroraConfig* config)
 void aurora_shutdown() { aurora::shutdown(); }
 const AuroraEvent* aurora_update() { return aurora::update(); }
 bool aurora_begin_frame() { return aurora::begin_frame(); }
+bool aurora_begin_frame_after_update() { return aurora::begin_frame_after_update(); }
 void aurora_end_frame() { aurora::end_frame(); }
 void aurora_set_frame_worker_wait_callback(AuroraFrameWorkerWaitCallback callback) {
   aurora::g_frameWorkerWaitCallback.store(callback, std::memory_order_release);

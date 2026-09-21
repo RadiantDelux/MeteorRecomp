@@ -11,6 +11,13 @@
 
 #include <SDL3/SDL_init.h>
 
+namespace {
+bool AudioTraceEnabled() {
+    static const bool enabled = std::getenv("METEOR_TRACE_AUDIO") != nullptr;
+    return enabled;
+}
+}
+
 AudioBackend& AudioBackend::Instance() {
     static AudioBackend instance;
     return instance;
@@ -60,7 +67,10 @@ bool AudioBackend::EnsureInitializedLocked(uint32_t sampleRate, uint32_t channel
         m_pendingBytes = 0;
         m_reportedDroppedBlock = false;
         m_queueLimitBytes = QueueLimitBytes(sampleRate, channels);
+        m_queueLimitBytes -= m_queueLimitBytes % (channels * sizeof(int16_t));
         m_pendingSamples.resize(m_queueLimitBytes / sizeof(int16_t));
+        m_pendingGap.assign(m_pendingSamples.size(), 0);
+        m_continuity.Reset(sampleRate, channels);
     }
 
     if (!SDL_InitSubSystem(SDL_INIT_AUDIO)) {
@@ -128,6 +138,7 @@ void AudioBackend::Shutdown() {
     {
         std::lock_guard<std::mutex> queueLock(m_queueMutex);
         m_pendingSamples.clear();
+        m_pendingGap.clear();
         m_queueReadSample = 0;
         m_queueWriteSample = 0;
         m_pendingSampleCount = 0;
@@ -170,8 +181,8 @@ uint32_t AudioBackend::RebufferBytes(uint32_t sampleRate, uint32_t channels) {
     return static_cast<uint32_t>((bytesPerSecond * rebufferMs) / 1000u);
 }
 
-bool AudioBackend::EnqueueSamples(const int16_t* samples, size_t sampleCount) {
-    if (!samples || sampleCount == 0) {
+bool AudioBackend::EnqueueSamples(const int16_t* samples, size_t sampleCount, bool gap) {
+    if ((!samples && !gap) || sampleCount == 0 || m_channels == 0 || sampleCount % m_channels != 0) {
         return false;
     }
 
@@ -195,12 +206,16 @@ bool AudioBackend::EnqueueSamples(const int16_t* samples, size_t sampleCount) {
 
         const size_t capacity = m_pendingSamples.size();
         const size_t firstCount = std::min(sampleCount, capacity - m_queueWriteSample);
-        std::memcpy(m_pendingSamples.data() + m_queueWriteSample, samples,
-                    firstCount * sizeof(int16_t));
-        if (firstCount < sampleCount) {
-            std::memcpy(m_pendingSamples.data(), samples + firstCount,
-                        (sampleCount - firstCount) * sizeof(int16_t));
+        if (!gap) {
+            std::memcpy(m_pendingSamples.data() + m_queueWriteSample, samples,
+                        firstCount * sizeof(int16_t));
+            if (firstCount < sampleCount) {
+                std::memcpy(m_pendingSamples.data(), samples + firstCount,
+                            (sampleCount - firstCount) * sizeof(int16_t));
+            }
         }
+        std::fill_n(m_pendingGap.data() + m_queueWriteSample, firstCount, uint8_t(gap));
+        std::fill_n(m_pendingGap.data(), sampleCount - firstCount, uint8_t(gap));
         m_queueWriteSample = (m_queueWriteSample + sampleCount) % capacity;
         m_pendingSampleCount += sampleCount;
         m_pendingBytes += incomingBytes;
@@ -208,7 +223,7 @@ bool AudioBackend::EnqueueSamples(const int16_t* samples, size_t sampleCount) {
     }
     m_enqueuedBytes.fetch_add(incomingBytes, std::memory_order_relaxed);
     const uint64_t block = m_producerBlocks.fetch_add(1, std::memory_order_relaxed) + 1;
-    if ((block & 0xffu) == 0u) {
+    if (AudioTraceEnabled() && (block & 0xffu) == 0u) {
         RT_LOG(RT_TAG_AUDIO) << "host ring: blocks=" << block
                              << " pending=" << pendingAfterWrite << "/" << m_queueLimitBytes
                              << " enqueued=" << m_enqueuedBytes.load(std::memory_order_relaxed)
@@ -218,6 +233,7 @@ bool AudioBackend::EnqueueSamples(const int16_t* samples, size_t sampleCount) {
                              << " realSupplied=" << m_realPcmSuppliedBytes.load(std::memory_order_relaxed)
                              << " underrun=" << m_underrunBytes.load(std::memory_order_relaxed)
                              << " rebuffer=" << (m_rebuffering.load(std::memory_order_relaxed) ? 1 : 0)
+                             << " staleDmaFrames=" << m_staleDmaFrames.load(std::memory_order_relaxed)
                              << std::endl;
     }
 
@@ -257,17 +273,20 @@ void AudioBackend::FeedAudioStream(SDL_AudioStream* stream, int additionalAmount
     // the ring under the short queue lock, then release it before calling SDL so
     // the translated guest never waits on a host audio-stream operation.
     std::array<int16_t, 4096> scratch{};
+    std::array<uint8_t, 4096> gaps{};
+    const size_t channels = m_channels;
+    if (channels == 0) return;
+    const size_t scratchSamples = scratch.size() / channels * channels;
     int supplied = 0;
     while (supplied < additionalAmount) {
+        const size_t requestedSamples = std::min(
+            static_cast<size_t>(additionalAmount - supplied) / (sizeof(int16_t) * channels) * channels,
+            scratchSamples);
+        if (requestedSamples == 0) break;
         size_t copiedSamples = 0;
         bool holdForRebuffer = false;
         {
             std::lock_guard<std::mutex> queueLock(m_queueMutex);
-            const size_t requestedSamples =
-                static_cast<size_t>(additionalAmount - supplied) / sizeof(int16_t);
-            if (requestedSamples == 0) {
-                break;
-            }
             if (m_rebuffering.load(std::memory_order_acquire)) {
                 const size_t threshold = RebufferBytes(m_sampleRate, m_channels);
                 if (m_pendingBytes < threshold) {
@@ -277,14 +296,16 @@ void AudioBackend::FeedAudioStream(SDL_AudioStream* stream, int additionalAmount
                 }
             }
             if (!holdForRebuffer && m_pendingSampleCount != 0 && !m_pendingSamples.empty()) {
-                copiedSamples = std::min({m_pendingSampleCount, requestedSamples, scratch.size()});
+                copiedSamples = std::min(m_pendingSampleCount, requestedSamples);
                 const size_t capacity = m_pendingSamples.size();
                 const size_t firstCount = std::min(copiedSamples, capacity - m_queueReadSample);
                 std::memcpy(scratch.data(), m_pendingSamples.data() + m_queueReadSample,
                             firstCount * sizeof(int16_t));
+                std::memcpy(gaps.data(), m_pendingGap.data() + m_queueReadSample, firstCount);
                 if (firstCount < copiedSamples) {
                     std::memcpy(scratch.data() + firstCount, m_pendingSamples.data(),
                                 (copiedSamples - firstCount) * sizeof(int16_t));
+                    std::memcpy(gaps.data() + firstCount, m_pendingGap.data(), copiedSamples - firstCount);
                 }
                 m_queueReadSample = (m_queueReadSample + copiedSamples) % capacity;
                 m_pendingSampleCount -= copiedSamples;
@@ -295,15 +316,21 @@ void AudioBackend::FeedAudioStream(SDL_AudioStream* stream, int additionalAmount
 
         const bool realPcmBlock = copiedSamples != 0;
         if (!realPcmBlock) {
-            const size_t requestedSamples = std::min(
-                static_cast<size_t>(additionalAmount - supplied) / sizeof(int16_t), scratch.size());
-            if (requestedSamples == 0) {
-                break;
-            }
             std::fill_n(scratch.data(), requestedSamples, int16_t{0});
+            std::fill_n(gaps.data(), requestedSamples, uint8_t{1});
             copiedSamples = requestedSamples;
             m_rebuffering.store(true, std::memory_order_release);
             m_underrunBytes.fetch_add(copiedSamples * sizeof(int16_t), std::memory_order_relaxed);
+        }
+        // Smooth only discontinuities, on the playback thread. Normal PCM
+        // passes through bit-for-bit and a gap cannot repeat stale ring data.
+        size_t realSamples = 0;
+        for (size_t first = 0; first < copiedSamples;) {
+            size_t end = first + channels;
+            while (end < copiedSamples && gaps[end] == gaps[first]) end += channels;
+            if (gaps[first] == 0) realSamples += end - first;
+            m_continuity.Process(scratch.data() + first, end - first, gaps[first] != 0);
+            first = end;
         }
         const int blockBytes = static_cast<int>(copiedSamples * sizeof(int16_t));
         if (!SDL_PutAudioStreamData(stream, scratch.data(), blockBytes)) {
@@ -311,9 +338,7 @@ void AudioBackend::FeedAudioStream(SDL_AudioStream* stream, int additionalAmount
                                  << SDL_GetError() << std::endl;
             break;
         }
-        if (realPcmBlock) {
-            m_realPcmSuppliedBytes.fetch_add(static_cast<uint64_t>(blockBytes), std::memory_order_relaxed);
-        }
+        m_realPcmSuppliedBytes.fetch_add(realSamples * sizeof(int16_t), std::memory_order_relaxed);
         m_callbackSuppliedBytes.fetch_add(static_cast<uint64_t>(blockBytes), std::memory_order_relaxed);
         supplied += blockBytes;
     }
@@ -346,6 +371,8 @@ bool AudioBackend::PushWiiAiSamplesBE16(const uint8_t* data, size_t bytes) {
     // allocation in the IRQ path.
     thread_local std::vector<int16_t> converted;
     converted.resize(frameCount * 2);
+    const uint64_t nextBlock = m_producerBlocks.load(std::memory_order_relaxed) + 1;
+    const bool traceBlock = AudioTraceEnabled() && (nextBlock & 0xffu) == 0u;
     uint16_t peak = 0;
     size_t nonZeroSamples = 0;
     for (size_t frame = 0; frame < frameCount; ++frame) {
@@ -357,21 +384,28 @@ bool AudioBackend::PushWiiAiSamplesBE16(const uint8_t* data, size_t bytes) {
                               static_cast<uint16_t>(data[leftOffset + 1]);
         converted[frame * 2] = static_cast<int16_t>(left);
         converted[frame * 2 + 1] = static_cast<int16_t>(right);
-        const int32_t leftSigned = static_cast<int16_t>(left);
-        const int32_t rightSigned = static_cast<int16_t>(right);
-        peak = static_cast<uint16_t>(std::max<int32_t>(
-            peak, std::max(std::abs(leftSigned), std::abs(rightSigned))));
-        nonZeroSamples += (left != 0u) ? 1u : 0u;
-        nonZeroSamples += (right != 0u) ? 1u : 0u;
+        if (traceBlock) {
+            const int32_t leftSigned = static_cast<int16_t>(left);
+            const int32_t rightSigned = static_cast<int16_t>(right);
+            peak = static_cast<uint16_t>(std::max<int32_t>(
+                peak, std::max(std::abs(leftSigned), std::abs(rightSigned))));
+            nonZeroSamples += (left != 0u) ? 1u : 0u;
+            nonZeroSamples += (right != 0u) ? 1u : 0u;
+        }
     }
 
-    const uint64_t nextBlock = m_producerBlocks.load(std::memory_order_relaxed) + 1;
-    if ((nextBlock & 0xffu) == 0u) {
+    if (traceBlock) {
         RT_LOG(RT_TAG_AUDIO) << "AI PCM: bytes=" << bytes << " peak=" << peak
                              << " nonzero=" << nonZeroSamples << "/" << sampleCount << std::endl;
     }
 
     return EnqueueSamples(converted.data(), converted.size());
+}
+
+bool AudioBackend::PushGapFrames(size_t frames) {
+    if (frames == 0) return true;
+    m_staleDmaFrames.fetch_add(frames, std::memory_order_relaxed);
+    return EnqueueSamples(nullptr, frames * m_channels, true);
 }
 
 bool AudioBackend::PushSamplesLE16(const int16_t* samples, size_t sampleCount) {

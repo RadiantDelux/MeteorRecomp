@@ -1,4 +1,5 @@
 #include "frame_interpolation.hpp"
+#include "interpolation_worker_pool.hpp"
 
 #include "../internal.hpp"
 #include "aurora/gfx.h"
@@ -43,104 +44,6 @@ std::atomic_uint64_t s_diagFramesLowMatch{0};
 std::atomic_uint64_t s_diagFramesReplayUnsafe{0};
 std::atomic_uint64_t s_diagSlotReductions{0};
 std::atomic_uint64_t s_diagLateSealDrops{0};
-// Persistent worker pool for the per-sample interpolation tasks. libc++ has no
-// parallel execution policies, so without it the seal loop runs serially. Leaked.
-class InterpolationWorkerPool {
-public:
-  static InterpolationWorkerPool& instance() {
-    static InterpolationWorkerPool* pool = new InterpolationWorkerPool();
-    return *pool;
-  }
-
-  // Runs fn(index) for every index in [0, count). Returns once every index has
-  // been processed. Not reentrant; only the producer/seal thread dispatches.
-  template <typename Fn>
-  void run(size_t count, const Fn& fn) {
-    if (count == 0) {
-      return;
-    }
-    if (m_workers.empty()) {
-      for (size_t i = 0; i < count; ++i) {
-        fn(i);
-      }
-      return;
-    }
-    {
-      // Job state and the generation bump publish under one lock, so a late worker
-      // can never observe a half-written job.
-      std::lock_guard lock(m_mutex);
-      m_invoke = [&fn](size_t index) { fn(index); };
-      m_count.store(count, std::memory_order_relaxed);
-      m_next.store(0, std::memory_order_relaxed);
-      m_remaining.store(count, std::memory_order_relaxed);
-      ++m_generation;
-    }
-    m_wake.notify_all();
-    consume();
-    // Wait for stragglers to leave consume() entirely, not just finish their chunks,
-    // so the next dispatch can safely reset the shared counters.
-    while (m_remaining.load(std::memory_order_acquire) != 0 ||
-           m_active.load(std::memory_order_acquire) != 0) {
-      std::this_thread::yield();
-    }
-    m_invoke = nullptr;
-  }
-
-private:
-  static constexpr size_t kChunk = 16;
-
-  InterpolationWorkerPool() {
-    const unsigned hardware = std::thread::hardware_concurrency();
-    // The caller helps too. Cap the helpers: tasks are short memcpy+math, so dispatch
-    // overhead and memory bandwidth dominate past a few threads.
-    const unsigned helpers = hardware > 2 ? std::min(hardware - 1, 6u) : 0;
-    m_workers.reserve(helpers);
-    for (unsigned i = 0; i < helpers; ++i) {
-      m_workers.emplace_back([this] { worker_loop(); });
-    }
-  }
-
-  void consume() {
-    const size_t count = m_count.load(std::memory_order_relaxed);
-    while (true) {
-      const size_t begin = m_next.fetch_add(kChunk, std::memory_order_relaxed);
-      if (begin >= count) {
-        return;
-      }
-      const size_t end = std::min(begin + kChunk, count);
-      for (size_t index = begin; index < end; ++index) {
-        m_invoke(index);
-      }
-      m_remaining.fetch_sub(end - begin, std::memory_order_release);
-    }
-  }
-
-  void worker_loop() {
-    uint64_t seenGeneration = 0;
-    while (true) {
-      {
-        std::unique_lock lock(m_mutex);
-        m_wake.wait(lock, [&] { return m_generation != seenGeneration; });
-        seenGeneration = m_generation;
-        // Counted under the mutex: when the dispatcher sees m_active == 0 every worker is
-        // parked or has not read the current generation, so a counter reset is safe.
-        m_active.fetch_add(1, std::memory_order_relaxed);
-      }
-      consume();
-      m_active.fetch_sub(1, std::memory_order_release);
-    }
-  }
-
-  std::vector<std::thread> m_workers;
-  std::mutex m_mutex;
-  std::condition_variable m_wake;
-  uint64_t m_generation = 0;
-  std::function<void(size_t)> m_invoke;
-  std::atomic_size_t m_count{0};
-  std::atomic_size_t m_next{0};
-  std::atomic_size_t m_remaining{0};
-  std::atomic_size_t m_active{0};
-};
 struct FrameTransformSnapshot {
   Mat4x4<float> projection{};
   Mat3x4<float> position{};
@@ -1159,9 +1062,10 @@ void finalize_frame_interpolation() noexcept {
   s_perspectiveMatches = static_cast<uint32_t>(std::count_if(
       currentToPrevious.begin(), currentToPrevious.end(),
       [](size_t previousIndex) { return previousIndex != SIZE_MAX; }));
-  // Interpolation never pauses on match quality: an unmatched draw just renders its
-  // end-frame state, while a ratio gate flapped the whole output cadence instead.
-  const bool eligible = configuredFps != 0;
+  // A pure 2D frame has no interpolatable camera/object motion. Replaying it
+  // would double its passes and falsely reserve a 30 Hz presentation span.
+  // Do not gate mixed 3D/HUD scenes on match ratio: unmatched draws still snap.
+  const bool eligible = configuredFps != 0 && s_perspectiveCandidates != 0;
 
   // Overlay observability: the live match ratio, and how often the scene sits in
   // low-match territory where inserted slots mostly duplicate draws.
@@ -1213,9 +1117,12 @@ void finalize_frame_interpolation() noexcept {
   if (eligible) {
     // Prepare each matched pair once: every sample of a draw shares the same
     // previous/current matrices. A flat vector keeps the sample tasks parallel.
-    std::vector<PreparedTransformInterpolation> preparedTransforms(s_currentFrameTransforms.size());
-    std::vector<uint8_t> preparedTransformState(s_currentFrameTransforms.size(), 0);
-    std::vector<PreparedAffinePair> preparedPairs;
+    static std::vector<PreparedTransformInterpolation> preparedTransforms;
+    preparedTransforms.assign(s_currentFrameTransforms.size(), PreparedTransformInterpolation{});
+    static std::vector<uint8_t> preparedTransformState;
+    preparedTransformState.assign(s_currentFrameTransforms.size(), 0);
+    static std::vector<PreparedAffinePair> preparedPairs;
+    preparedPairs.clear();
     preparedPairs.reserve(s_pendingUniformInterpolations.size() * 2);
 
     const auto appendPreparedPair = [&](const Mat3x4<float>& previousPosition,
@@ -1235,16 +1142,8 @@ void finalize_frame_interpolation() noexcept {
     // for byte, so a chunk with no partner of its own can borrow a sibling's.
     static std::vector<int32_t> paletteDrawIndex; // draw -> compact palette index
     static std::vector<uint32_t> paletteDraws;    // compact palette index -> draw
-    paletteDrawIndex.assign(s_currentFrameTransforms.size(), -1);
+    paletteDrawIndex.clear();
     paletteDraws.clear();
-    for (size_t drawIndex = 0; drawIndex < s_currentFrameTransforms.size(); ++drawIndex) {
-      const auto& transform = s_currentFrameTransforms[drawIndex].transform;
-      if (!transform.indexedMatrices || transform.usedMatrixMask == 0) {
-        continue;
-      }
-      paletteDrawIndex[drawIndex] = static_cast<int32_t>(paletteDraws.size());
-      paletteDraws.push_back(static_cast<uint32_t>(drawIndex));
-    }
 
     struct PaletteSlotKey {
       HashType hash = 0;
@@ -1259,79 +1158,96 @@ void finalize_frame_interpolation() noexcept {
     static std::vector<ResolvedSlot> resolvedSlots;
     static std::vector<size_t> resolvedProjectionEntry;
     paletteSlotKeys.clear();
-    resolvedSlots.assign(paletteDraws.size() * MaxPnMtx, ResolvedSlot{});
-    resolvedProjectionEntry.assign(paletteDraws.size(), kNoPreparedPair);
+    resolvedSlots.clear();
+    resolvedProjectionEntry.clear();
+    // 30 -> 60 deliberately uses exact-instance palette partners below. The
+    // content-keyed sibling resolver is only consulted by the higher-rate modes,
+    // so building and sorting it here for target60 was pure CPU overhead in the
+    // heaviest skinned scenes.
+    if (configuredFps != 60) {
+      paletteDrawIndex.assign(s_currentFrameTransforms.size(), -1);
+      for (size_t drawIndex = 0; drawIndex < s_currentFrameTransforms.size(); ++drawIndex) {
+        const auto& transform = s_currentFrameTransforms[drawIndex].transform;
+        if (!transform.indexedMatrices || transform.usedMatrixMask == 0) {
+          continue;
+        }
+        paletteDrawIndex[drawIndex] = static_cast<int32_t>(paletteDraws.size());
+        paletteDraws.push_back(static_cast<uint32_t>(drawIndex));
+      }
+      resolvedSlots.assign(paletteDraws.size() * MaxPnMtx, ResolvedSlot{});
+      resolvedProjectionEntry.assign(paletteDraws.size(), kNoPreparedPair);
 
-    for (uint32_t palette = 0; palette < paletteDraws.size(); ++palette) {
-      const auto& transform = s_currentFrameTransforms[paletteDraws[palette]].transform;
-      for (uint32_t slot = 0; slot < MaxPnMtx; ++slot) {
-        if ((transform.usedMatrixMask & (1u << slot)) == 0) {
-          continue;
+      for (uint32_t palette = 0; palette < paletteDraws.size(); ++palette) {
+        const auto& transform = s_currentFrameTransforms[paletteDraws[palette]].transform;
+        for (uint32_t slot = 0; slot < MaxPnMtx; ++slot) {
+          if ((transform.usedMatrixMask & (1u << slot)) == 0) {
+            continue;
+          }
+          paletteSlotKeys.push_back({transform.indexedMatrices->slotHash[slot], palette, slot});
         }
-        paletteSlotKeys.push_back({transform.indexedMatrices->slotHash[slot], palette, slot});
       }
-    }
-    std::sort(paletteSlotKeys.begin(), paletteSlotKeys.end(),
-              [](const PaletteSlotKey& lhs, const PaletteSlotKey& rhs) {
-                if (lhs.hash != rhs.hash) {
-                  return lhs.hash < rhs.hash;
-                }
-                if (lhs.palette != rhs.palette) {
-                  return lhs.palette < rhs.palette;
-                }
-                return lhs.slot < rhs.slot;
-              });
+      std::sort(paletteSlotKeys.begin(), paletteSlotKeys.end(),
+                [](const PaletteSlotKey& lhs, const PaletteSlotKey& rhs) {
+                  if (lhs.hash != rhs.hash) {
+                    return lhs.hash < rhs.hash;
+                  }
+                  if (lhs.palette != rhs.palette) {
+                    return lhs.palette < rhs.palette;
+                  }
+                  return lhs.slot < rhs.slot;
+                });
 
-    for (size_t runStart = 0; runStart < paletteSlotKeys.size();) {
-      size_t runEnd = runStart + 1;
-      while (runEnd < paletteSlotKeys.size() &&
-             paletteSlotKeys[runEnd].hash == paletteSlotKeys[runStart].hash) {
-        ++runEnd;
-      }
-      // Where this matrix was last frame, per the draws that did match. Partners that
-      // disagree mean no single previous pose, so the coupled unit duplicates.
-      const Mat3x4<float>* sourcePosition = nullptr;
-      const Mat3x4<float>* sourceNormal = nullptr;
-      size_t sourceEntry = kNoPreparedPair;
-      HashType sourceHash = 0;
-      bool ambiguous = false;
-      for (size_t keyIndex = runStart; keyIndex < runEnd && !ambiguous; ++keyIndex) {
-        const uint32_t drawIndex = paletteDraws[paletteSlotKeys[keyIndex].palette];
-        const size_t previousIndex = currentToPrevious[drawIndex];
-        if (previousIndex >= s_previousFrameTransforms.size()) {
+      for (size_t runStart = 0; runStart < paletteSlotKeys.size();) {
+        size_t runEnd = runStart + 1;
+        while (runEnd < paletteSlotKeys.size() &&
+               paletteSlotKeys[runEnd].hash == paletteSlotKeys[runStart].hash) {
+          ++runEnd;
+        }
+        // Where this matrix was last frame, per the draws that did match. Partners that
+        // disagree mean no single previous pose, so the coupled unit duplicates.
+        const Mat3x4<float>* sourcePosition = nullptr;
+        const Mat3x4<float>* sourceNormal = nullptr;
+        size_t sourceEntry = kNoPreparedPair;
+        HashType sourceHash = 0;
+        bool ambiguous = false;
+        for (size_t keyIndex = runStart; keyIndex < runEnd && !ambiguous; ++keyIndex) {
+          const uint32_t drawIndex = paletteDraws[paletteSlotKeys[keyIndex].palette];
+          const size_t previousIndex = currentToPrevious[drawIndex];
+          if (previousIndex >= s_previousFrameTransforms.size()) {
+            continue;
+          }
+          const auto& current = s_currentFrameTransforms[drawIndex].transform;
+          const auto& previous = s_previousFrameTransforms[previousIndex].transform;
+          // A slot index is an absolute palette address, which is why it pairs matched draws
+          // and why a changed layout invalidates every slot as a source.
+          if (!previous.indexedMatrices || previous.usedMatrixMask != current.usedMatrixMask) {
+            continue;
+          }
+          const uint32_t slot = paletteSlotKeys[keyIndex].slot;
+          const HashType candidateHash = previous.indexedMatrices->slotHash[slot];
+          if (sourcePosition == nullptr) {
+            sourcePosition = &previous.indexedMatrices->position[slot];
+            sourceNormal = &previous.indexedMatrices->normal[slot];
+            sourceHash = candidateHash;
+            sourceEntry = previousIndex;
+          } else if (candidateHash != sourceHash) {
+            ambiguous = true;
+          }
+        }
+        if (ambiguous || sourcePosition == nullptr) {
+          runStart = runEnd;
           continue;
         }
-        const auto& current = s_currentFrameTransforms[drawIndex].transform;
-        const auto& previous = s_previousFrameTransforms[previousIndex].transform;
-        // A slot index is an absolute palette address, which is why it pairs matched draws
-        // and why a changed layout invalidates every slot as a source.
-        if (!previous.indexedMatrices || previous.usedMatrixMask != current.usedMatrixMask) {
-          continue;
+        for (size_t keyIndex = runStart; keyIndex < runEnd; ++keyIndex) {
+          const auto& key = paletteSlotKeys[keyIndex];
+          resolvedSlots[static_cast<size_t>(key.palette) * MaxPnMtx + key.slot] = {sourcePosition,
+                                                                                  sourceNormal};
+          if (resolvedProjectionEntry[key.palette] == kNoPreparedPair) {
+            resolvedProjectionEntry[key.palette] = sourceEntry;
+          }
         }
-        const uint32_t slot = paletteSlotKeys[keyIndex].slot;
-        const HashType candidateHash = previous.indexedMatrices->slotHash[slot];
-        if (sourcePosition == nullptr) {
-          sourcePosition = &previous.indexedMatrices->position[slot];
-          sourceNormal = &previous.indexedMatrices->normal[slot];
-          sourceHash = candidateHash;
-          sourceEntry = previousIndex;
-        } else if (candidateHash != sourceHash) {
-          ambiguous = true;
-        }
-      }
-      if (ambiguous || sourcePosition == nullptr) {
         runStart = runEnd;
-        continue;
       }
-      for (size_t keyIndex = runStart; keyIndex < runEnd; ++keyIndex) {
-        const auto& key = paletteSlotKeys[keyIndex];
-        resolvedSlots[static_cast<size_t>(key.palette) * MaxPnMtx + key.slot] = {sourcePosition,
-                                                                                sourceNormal};
-        if (resolvedProjectionEntry[key.palette] == kNoPreparedPair) {
-          resolvedProjectionEntry[key.palette] = sourceEntry;
-        }
-      }
-      runStart = runEnd;
     }
 
     for (const auto& task : s_pendingUniformInterpolations) {
@@ -1486,7 +1402,7 @@ void finalize_frame_interpolation() noexcept {
     };
     // A handful of tasks costs more to schedule than to run. The pool stands in for
     // std::execution::par, which libc++ does not provide at all.
-    constexpr size_t kMinimumParallelInterpolationTasks = 64;
+    constexpr size_t kMinimumParallelInterpolationTasks = 256;
     if (s_pendingUniformInterpolations.size() < kMinimumParallelInterpolationTasks) {
       std::for_each(s_pendingUniformInterpolations.begin(), s_pendingUniformInterpolations.end(),
                     interpolatePendingUniform);

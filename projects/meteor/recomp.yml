@@ -42,6 +42,18 @@ translation:
     path: projects/meteor/function_map_ghidra_safe.txt
   entry_points:
     - 0x8000403C
+    # Runtime hits PID15924 and PID13500. Retail boundaries are independent:
+    # 0x801BFB04 follows 0x801BFB00 blr and creates its own aligned stack;
+    # 0x801AE1E8 is a standalone blr between the previous epilogue and the
+    # independent 0x801AE1EC leaf. Keep original code, no callback bypass.
+    - 0x801BFB04
+    - 0x801AE1E8
+    # Runtime PID11992: table callback at LR 0x8006A9EC. The previous leaf
+    # tail-branches at 0x801AE208; this entry owns a new 0x90-byte stack frame.
+    - 0x801AE20C
+    # Runtime PID26980: callback at LR 0x8006A85C. Independent retail blr
+    # at 0x80158024, between the tail branch at 0x80158020 and the next leaf.
+    - 0x80158024
     # Runtime-observed callback target from the table at *(r13-0x6B30)+0x104,
     # indexed in 0x18-byte records by func_800C67AC. The caller loads the first
     # word of the selected record into CTR and bctrls at 0x800C6930. Ghidra
@@ -2741,15 +2753,28 @@ translation:
     # blr leaf; next independent dynamically aligned function starts 0x801704F0.
     # The crash label func_80170168+0x384 was only a nearest-generated-label artifact.
     - 0x801704EC
-    # Diagnostic PracticeSweeper PID32868 / practice_sweeper_1789906443_pid32868
-    # reached func_800C69B8 through func_800C6704 (architectural LR 0x800C6718).
-    # SAME-PID singleton [0x8062A7F0]=0x92353D60 has current index 6 and
+    # Runtime-observed callback in func_800C69B8 through func_800C6704
+    # (architectural LR 0x800C6718). The singleton [0x8062A7F0]=0x92353D60
+    # has current index 6 and
     # table pointer [root+0x104]=0x80374D30, selecting 24-byte record 0x80374DC0.
     # The dispatcher loads record+0x04, which is exactly 0x800DFAF8. Raw/HEADLESS
     # ownership is unambiguous: predecessor returns at 0x800DFAF4; target is the
     # standalone leaf `li r3,6; blr` at 0x800DFAF8..0x800DFAFC; next independent
     # framed callback starts at already-map-covered 0x800DFB00. Runtime-taken hard root.
     - 0x800DFAF8
+    # Fresh NORMAL PID29016 / base_1789968187_pid29016 stopped in func_8006A690
+    # at architectural LR 0x8006A6DC with CTR/r12=0x80158018. SAME-PID
+    # r3/r30=0x926CC2A0 has [+0x28]=0x80378230; descriptor slot +0 contains
+    # exactly 0x80158018 (+4=0x80157F88, +8=0x8015800C, +0x10=0x80158024).
+    # func_8006A690 loads r4=[r30+0x28], then r12=[r4+0] and bctrls through it.
+    # HEADLESS proves func_80157F88 returns at 0x80158008; independent sibling
+    # 0x8015800C..0x80158014 tail-branches away with no fallthrough; target
+    # 0x80158018..0x80158020 is its own three-instruction tail thunk ending in
+    # a terminal branch to 0x80132E30; next independent entry 0x80158024 is the
+    # already-rooted standalone blr. Static DOL descriptor 0x80378230 matches
+    # SAME-PID MEM1 exactly, excluding a guest-memory stomp. Runtime publication
+    # plus exact no-fallthrough boundaries make this exact callback a hard root.
+    - 0x80158018
   allow_unsupported_instructions: false
   enable_state_free_abi: false
   discover_v_table_functions: false
