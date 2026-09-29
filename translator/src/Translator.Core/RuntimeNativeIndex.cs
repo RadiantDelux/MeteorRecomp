@@ -1,0 +1,115 @@
+using System.Text.RegularExpressions;
+using Translator.Core.Analysis;
+using Translator.Core.CodeGen;
+
+namespace Translator.Core;
+
+// todo: the entire reading of cpp/h files using regex is a bit fragile, but it works for now. 
+// however this does eventually need to be replaced with another solution.
+public sealed record RuntimeNativeRegistration(
+    uint Address,
+    string Symbol,
+    string SourceFile,
+    bool IsTranslatedOverride,
+    bool ExcludesBaseTranslation,
+    bool IsTitleScoped);
+
+public sealed record RuntimeNativeAbiEntry(
+    uint Address,
+    string[] ArgumentRegisters,
+    string[] ScalarFloatArgumentRegisters);
+
+public sealed record RuntimeNativeEffectEntry(
+    uint Address,
+    GuestAbiContract Contract,
+    bool IsPrecise);
+
+/// <summary>
+/// One process-local view of the runtime's native registrations and their guest
+/// ABI contracts. C++ remains the only source of truth: the translator builds
+/// this index once, shares it across all consumers, and writes nothing to disk.
+/// </summary>
+public sealed record RuntimeNativeIndex(
+    RuntimeNativeRegistration[] Registrations,
+    RuntimeNativeAbiEntry[] VoidStubAbis,
+    RuntimeNativeEffectEntry[] Effects)
+{
+    public RuntimeNativeGuestEffectSet ToGuestEffectSet()
+    {
+        var contracts = Effects.ToDictionary(static entry => entry.Address, static entry => entry.Contract);
+        var precise = Effects.Where(static entry => entry.IsPrecise)
+            .Select(static entry => entry.Address).ToHashSet();
+        var conservative = Effects.Where(static entry => !entry.IsPrecise)
+            .Select(static entry => entry.Address).ToHashSet();
+        return new RuntimeNativeGuestEffectSet(contracts, precise, conservative);
+    }
+}
+
+public static class RuntimeNativeIndexBuilder
+{
+    public static RuntimeNativeIndex Build(string nativeSourceDirectory, bool genericDolBoot = false)
+    {
+        var sourceRoot = Path.GetFullPath(nativeSourceDirectory);
+        if (!Directory.Exists(sourceRoot))
+            return new RuntimeNativeIndex([], [], []);
+
+        var sources = NativeSourceParsing.ReadDirectory(sourceRoot);
+        var registrations = ScanRegistrations(sources, genericDolBoot).ToArray();
+        var registeredAddresses = registrations.Select(static registration => registration.Address).ToHashSet();
+        var effects = RuntimeNativeGuestEffectAnalyzer.AnalyzeSources(sources);
+        var abis = RuntimeNativeFunctionAbiProvider.AnalyzeVoidStubAbis(sources);
+        return new RuntimeNativeIndex(
+            registrations,
+            abis.Where(item => registeredAddresses.Contains(item.Key))
+                .OrderBy(static item => item.Key)
+                .Select(static item => new RuntimeNativeAbiEntry(
+                    item.Key,
+                    item.Value.ArgumentRegisters.Order(StringComparer.OrdinalIgnoreCase).ToArray(),
+                    item.Value.ScalarFloatArgumentRegisters.Order(StringComparer.OrdinalIgnoreCase).ToArray()))
+                .ToArray(),
+            effects.Contracts.Where(item => registeredAddresses.Contains(item.Key))
+                .OrderBy(static item => item.Key)
+                .Select(item => new RuntimeNativeEffectEntry(
+                    item.Key, item.Value, effects.PreciseContracts.Contains(item.Key)))
+                .ToArray());
+    }
+
+    private static IEnumerable<RuntimeNativeRegistration> ScanRegistrations(
+        IReadOnlyList<NativeSourceFile> sources,
+        bool genericDolBoot)
+    {
+        var registrations = new List<RuntimeNativeRegistration>();
+        foreach (var sourceFile in sources)
+        {
+            var source = sourceFile.Content;
+            foreach (Match match in GeneratedMarkers.NativeFunctionRegistrationPattern().Matches(source))
+            {
+                var titleScoped = match.Groups["title"].Success;
+                if (!genericDolBoot || titleScoped)
+                    Add(match, match.Groups["symbol"].Value, false, !match.Groups["as"].Success, titleScoped);
+            }
+            if (!genericDolBoot)
+            {
+                foreach (Match match in GeneratedMarkers.TranslatedFunctionRegistrationPattern().Matches(source))
+                    Add(match, match.Groups["symbol"].Value, true, true, false);
+                foreach (Match match in GeneratedMarkers.NativeOverridePattern().Matches(source))
+                    Add(match, match.Groups["symbol"].Value, false, true, false);
+                foreach (Match match in GeneratedMarkers.FatalStubPattern().Matches(source))
+                    Add(match, $"GX_FATAL_STUB_{match.Groups["address"].Value}", false, true, false);
+            }
+
+            void Add(Match match, string symbol, bool translated, bool excludesBase, bool titleScoped) =>
+                registrations.Add(new RuntimeNativeRegistration(
+                    ParseAddress(match.Groups["address"].Value), symbol, sourceFile.RelativePath,
+                    translated, excludesBase, titleScoped));
+        }
+
+        return registrations
+            .Distinct()
+            .OrderBy(static registration => registration.Address)
+            .ThenBy(static registration => registration.Symbol, StringComparer.Ordinal)
+            .ThenBy(static registration => registration.SourceFile, StringComparer.Ordinal);
+    }
+
+    private static uint ParseAddress(string value) => GuestTargetParser.ParseHexAddress(value);
+}

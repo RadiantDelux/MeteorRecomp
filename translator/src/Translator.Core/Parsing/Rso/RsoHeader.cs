@@ -1,0 +1,28 @@
+namespace Translator.Core.Parsing.Rso;
+
+public sealed record RsoHeader(
+    uint NextModuleLink,
+    uint PreviousModuleLink,
+    uint SectionCount,
+    uint SectionTableOffset,
+    uint ModuleNameOffset,
+    uint ModuleNameSize,
+    uint Version,
+    uint BssSize,
+    byte PrologSectionIndex,
+    byte EpilogSectionIndex,
+    byte UnresolvedSectionIndex,
+    byte BssSectionIndex,
+    uint PrologOffset,
+    uint EpilogOffset,
+    uint UnresolvedOffset,
+    uint InternalRelocationTableOffset,
+    uint InternalRelocationTableSize,
+    uint ExternalRelocationTableOffset,
+    uint ExternalRelocationTableSize,
+    uint ExportTableOffset,
+    uint ExportTableSize,
+    uint ExportNameTableOffset,
+    uint ImportTableOffset,
+    uint ImportTableSize,
+    uint ImportNameTableOffset);

@@ -1,0 +1,35 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 25,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "release",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/../../build/meteor/native/${hostSystemName}",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_C_COMPILER": "clang",
+        "CMAKE_CXX_COMPILER": "clang++",
+        "MKW_GENERIC_DOL_BOOT": "ON",
+        "WIICOMPILED_GUEST_PLATFORM": "wii",
+        "MKW_GENERATED_DIR": "${sourceDir}/../../build/meteor/generated",
+        "MKW_TITLE_NATIVE_DIR": "${sourceDir}/runtime_native",
+        "WIICOMPILED_STORAGE_NAMESPACE": "meteor",
+        "WIICOMPILED_EXECUTABLE_BASENAME": "meteor"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "release",
+      "configurePreset": "release",
+      "targets": [
+        "WiiCompiled"
+      ]
+    }
+  ]
+}
